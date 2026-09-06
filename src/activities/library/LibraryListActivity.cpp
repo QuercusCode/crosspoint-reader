@@ -204,20 +204,6 @@ void LibraryListActivity::openSearch() {
   });
 }
 
-void LibraryListActivity::applySortOrder(const library::SortOrder order) {
-  groupsCollapsed = false;
-  groupCount = 0;
-  sortOrder = order;
-  // The filter holds positions in the old order, so it must be rebuilt.
-  applyFilter();
-  // The order changed under the ring; the strip keeps the focus it had, any
-  // row selection collapses to the first row of the new order.
-  auto& nav = activeNav();
-  if (nav.selected != 0) nav.selected = 1;
-  nav.top = 0;
-  requestUpdate();
-}
-
 void LibraryListActivity::stepTab(const int direction) {
   const int next = (activeTab() + (direction > 0 ? 1 : TAB_SLOTS - 1)) % TAB_SLOTS;
   selectTab(next, false);
@@ -231,12 +217,15 @@ void LibraryListActivity::onTabAction(const int index) {
 void LibraryListActivity::selectTab(const int index, const bool toggleIfActive) {
   if (index < 0 || index >= TAB_SLOTS) return;
   if (toggleIfActive && index == activeTab()) descendingTabs ^= static_cast<uint8_t>(1u << index);
-  applySortOrder(orderForTab(index, descendingTabs));
+  sortOrder = orderForTab(index, descendingTabs);
+  // The filter holds positions in the old order, so it must be rebuilt.
+  applyFilter();
   // Tab changes happen only while the bar owns focus. A tab's remembered row
   // must not pull focus back into the list after the switch.
   auto& nav = activeNav();
   nav.selected = 0;
   nav.top = 0;
+  requestUpdate();
 }
 
 void LibraryListActivity::toggleSortDirection() { selectTab(activeTab(), true); }
@@ -521,7 +510,7 @@ void LibraryListActivity::navigateButtons() {
 
 void LibraryListActivity::buildRows(UiScreen& screen) {
   auto& nav = activeNav();
-  const int count = bookRowCount();
+  const int count = listCount();
   const bool authorGrouped = isAuthorSort(sortOrder);
   const bool grouped = !isAddedSort(sortOrder);
 
@@ -533,49 +522,58 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
   props.labelText.maxLines = 1;
   props.headerUnderline = false;
   props.scrollIndicator = false;
-  syncTabListViewport(screen, props, /*hasSubtitle=*/!authorGrouped);
+  syncTabListViewport(screen, props, /*hasSubtitle=*/!groupsCollapsed && !authorGrouped);
 
   const size_t cap = static_cast<size_t>(nav.visibleRows > 0 ? nav.visibleRows : 1);
   if (winTitles.size() < cap) winTitles.resize(cap);
   if (winAuthors.size() < cap) winAuthors.resize(cap);
-  if (winHeaders.size() < cap) winHeaders.resize(cap);
+  if (!groupsCollapsed && winHeaders.size() < cap) winHeaders.resize(cap);
   winItems.clear();
   if (winItems.capacity() < cap) winItems.reserve(cap);
 
-  int books = 0;
+  int rows = 0;
   int headers = 0;
   uint32_t previousInitial = 0;
   // Capture this after syncTabListViewport(), which may clamp nav.top.
   const int windowStart = static_cast<int>(props.topIndex);
-  for (int entry = windowStart; entry < count && books < static_cast<int>(cap); entry++) {
-    std::string& title = winTitles[static_cast<size_t>(books)];
-    std::string& author = winAuthors[static_cast<size_t>(books)];
-    rowTextFor(entry, title, author);
-
-    uint32_t initial = 0;
-    bool startsGroup = false;
-    if (authorGrouped) {
-      startsGroup = books == 0 || author != winAuthors[static_cast<size_t>(books - 1)];
-    } else if (grouped) {
-      initial = titleInitialFor(entry);
-      startsGroup = books == 0 || initial != previousInitial;
-      previousInitial = initial;
-    }
+  for (int entry = windowStart; entry < count && rows < static_cast<int>(cap); entry++) {
+    std::string& title = winTitles[static_cast<size_t>(rows)];
+    std::string& author = winAuthors[static_cast<size_t>(rows)];
     fui::ListItem item;
-    if (startsGroup) {
-      std::string& heading = winHeaders[static_cast<size_t>(headers++)];
-      if (authorGrouped)
-        formatAuthorHeading(author, heading);
-      else
-        formatInitialHeading(initial, heading);
-      item.sectionHeading = heading.c_str();
+    if (groupsCollapsed) {
+      const int bookEntry = groupStarts[entry];
+      if (authorGrouped) {
+        rowTextFor(bookEntry, title, author);
+        formatAuthorHeading(author, title);
+      } else {
+        formatInitialHeading(titleInitialFor(bookEntry), title);
+      }
+    } else {
+      rowTextFor(entry, title, author);
+      uint32_t initial = 0;
+      bool startsGroup = false;
+      if (authorGrouped) {
+        startsGroup = rows == 0 || author != winAuthors[static_cast<size_t>(rows - 1)];
+      } else if (grouped) {
+        initial = titleInitialFor(entry);
+        startsGroup = rows == 0 || initial != previousInitial;
+        previousInitial = initial;
+      }
+      if (startsGroup) {
+        std::string& heading = winHeaders[static_cast<size_t>(headers++)];
+        if (authorGrouped)
+          formatAuthorHeading(author, heading);
+        else
+          formatInitialHeading(initial, heading);
+        item.sectionHeading = heading.c_str();
+      }
+      if (!authorGrouped && !author.empty()) item.subtitle = author.c_str();
     }
 
     item.label = title.c_str();
-    if (!authorGrouped && !author.empty()) item.subtitle = author.c_str();
     item.actionValue = static_cast<int16_t>(entry);
     winItems.push_back(item);
-    books++;
+    rows++;
   }
 
   props.items = winItems.data();
@@ -601,51 +599,6 @@ void LibraryListActivity::formatAuthorHeading(const std::string& author, std::st
   if (lastSpace != std::string::npos && lastSpace + 1 < out.size()) {
     out = out.substr(lastSpace + 1) + ", " + out.substr(0, lastSpace);
   }
-}
-
-void LibraryListActivity::buildGroupRows(UiScreen& screen) {
-  auto& nav = activeNav();
-  fui::ListProps props;
-  props.count = groupCount;
-  props.action = ACTION_ROW;
-  props.inputMask = fui::InputTouch | fui::InputLongPress;
-  props.labelText = screen.theme().bodyText;
-  props.labelText.maxLines = 1;
-  props.headerUnderline = false;
-  props.scrollIndicator = false;
-  syncTabListViewport(screen, props);
-
-  const size_t cap = static_cast<size_t>(nav.visibleRows > 0 ? nav.visibleRows : 1);
-  if (winTitles.size() < cap) winTitles.resize(cap);
-  if (winAuthors.size() < cap) winAuthors.resize(cap);
-  winItems.clear();
-  if (winItems.capacity() < cap) winItems.reserve(cap);
-
-  int rows = 0;
-  std::string ignoredTitle;
-  ignoredTitle.reserve(128);
-  const int windowStart = static_cast<int>(props.topIndex);
-  for (int entry = windowStart; entry < groupCount && rows < static_cast<int>(cap); entry++) {
-    std::string& label = winTitles[static_cast<size_t>(rows)];
-    const int bookEntry = groupStarts[entry];
-    if (isAuthorSort(sortOrder)) {
-      std::string& author = winAuthors[static_cast<size_t>(rows)];
-      rowTextFor(bookEntry, ignoredTitle, author);
-      formatAuthorHeading(author, label);
-    } else {
-      formatInitialHeading(titleInitialFor(bookEntry), label);
-    }
-    fui::ListItem item;
-    item.label = label.c_str();
-    item.actionValue = static_cast<int16_t>(entry);
-    winItems.push_back(item);
-    rows++;
-  }
-
-  props.items = winItems.data();
-  props.itemsWindowFirst = static_cast<uint16_t>(windowStart);
-  props.itemsWindowCount = static_cast<uint16_t>(winItems.size());
-  screen.list(props);
 }
 
 void LibraryListActivity::buildHeader(UiScreen& screen) {
@@ -683,10 +636,7 @@ void LibraryListActivity::buildScreen(UiScreen& screen) {
     screen.centeredText(message);
     return;
   }
-  if (groupsCollapsed)
-    buildGroupRows(screen);
-  else
-    buildRows(screen);
+  buildRows(screen);
 }
 
 // "12/69 books" at the bottom right: which book is selected, out of how many.

@@ -67,7 +67,6 @@ class LibraryListActivity final : public UiTabListActivity {
   bool collapseGroups(int bookEntry);
   void expandGroup(int groupEntry);
   void restoreExpandedList();
-  void applySortOrder(library::SortOrder order);
   void selectTab(int index, bool toggleIfActive);
   void toggleSortDirection();
   // Sub-screens act on button press, so a button still held when we resume must
@@ -89,7 +88,6 @@ class LibraryListActivity final : public UiTabListActivity {
   void buildHeader(UiScreen& screen);
   // Materializes ListItems and their strings for the visible window only.
   void buildRows(UiScreen& screen);
-  void buildGroupRows(UiScreen& screen);
   void formatInitialHeading(uint32_t initial, std::string& out) const;
   void formatAuthorHeading(const std::string& author, std::string& out) const;
   void drawPositionReadout() const;

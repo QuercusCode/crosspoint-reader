@@ -214,7 +214,6 @@ struct WalkState {
   uint16_t books = 0;
   uint16_t folderId = 0;
   uint32_t folderBytes = 0;
-  uint32_t nameBytes = 0;
   uint16_t nextFirstSeen = 0;
   uint16_t duplicatesDropped = 0;
   uint16_t unreadableSkipped = 0;
@@ -293,7 +292,6 @@ bool stageRecord(WalkState& st, const std::string& name, const uint32_t fileSize
   const std::string folded = fold(title, true);
   const std::string key = authorKey(author);
 
-  entry.record.nameOff = st.nameBytes;
   entry.record.fileSize = fileSize;
 
   // Reuse the arrival order this book already had. Without this every rebuild
@@ -335,7 +333,6 @@ bool stageRecord(WalkState& st, const std::string& name, const uint32_t fileSize
     st.failed = true;
     return false;
   }
-  st.nameBytes += entry.record.nameLen;
   st.books++;
   return true;
 }
@@ -835,10 +832,7 @@ bool emitIndex(const char* folderStagePath, WalkState& st, const uint16_t* order
 
   // Records, in title order, with both ranks and the name offset filled in.
   //
-  // nameOff MUST be recomputed here. The walk assigns offsets in discovery
-  // order, but the name blob below is written in title order, so a staged offset
-  // points at whatever name happened to be staged at that position — which
-  // renders as the tail of one name glued to the head of the next.
+  // Name offsets follow the title order used to emit the name blob below.
   // One pair of staging buffers on the heap, reused by both emit loops. As
   // locals they were 768 bytes each, so 1.5 KB of stack inside a function running
   // on a 4 KB task — the kind of margin that survives a test library and fails on
