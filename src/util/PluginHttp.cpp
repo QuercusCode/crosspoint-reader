@@ -4,6 +4,7 @@
 #include <Logging.h>
 #include <SecureHttpClient.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -161,39 +162,30 @@ void loadConfigFile(const std::string& file, Headers& out) {
 }
 
 int request(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
-            const std::string& body, const Headers& headers, std::string& out, const size_t maxResponse) {
+            const std::string& body, const Headers& headers, String& out, const size_t maxResponse) {
   freeink::SecureHttpClient tmp;
   freeink::SecureHttpClient* httpPtr = openClient(session, tmp, url, headers);
   if (!httpPtr) return -1;
   freeink::SecureHttpClient& http = *httpPtr;
 
-  out.clear();
+  out.remove(0);
+  size_t reserved = 0;
   bool overflow = false;
-  const int status = http.sendRequest(method.c_str(), reinterpret_cast<const uint8_t*>(body.data()), body.size(),
-                                      [&](const uint8_t* data, size_t len) {
-                                        if (out.size() + len > maxResponse) {
-                                          overflow = true;
-                                          return false;
-                                        }
-                                        // Grow the buffer only as needed, and only when a nothrow probe proves
-                                        // the larger block is available. A bare string reallocation would abort
-                                        // the device on low heap when a response is large (e.g. an API that
-                                        // inlines article HTML); here we just stop and fail the request.
-                                        if (out.size() + len > out.capacity()) {
-                                          size_t want = out.capacity() ? out.capacity() * 2 : 2048;
-                                          if (want < out.size() + len) want = out.size() + len;
-                                          if (want > maxResponse) want = maxResponse;
-                                          void* probe = malloc(want + 256);
-                                          if (!probe) {
-                                            overflow = true;
-                                            return false;
-                                          }
-                                          free(probe);
-                                          out.reserve(want);
-                                        }
-                                        out.append(reinterpret_cast<const char*>(data), len);
-                                        return true;
-                                      });
+  const int status = http.sendRequest(
+      method.c_str(), reinterpret_cast<const uint8_t*>(body.data()), body.size(), [&](const uint8_t* data, size_t len) {
+        if (len > maxResponse - out.length()) {
+          overflow = true;
+          return false;
+        }
+        const size_t needed = out.length() + len;
+        // Grow geometrically instead of reallocating for every network chunk.
+        if (needed > reserved) reserved = std::min(maxResponse, std::max(needed, reserved * 2));
+        if (!out.reserve(reserved) || !out.concat(reinterpret_cast<const char*>(data), len)) {
+          overflow = true;
+          return false;
+        }
+        return true;
+      });
   // Error statuses still return their body: OAuth device-code polling carries
   // its state ("authorization_pending") in 4xx response bodies.
   if (overflow || status < 0 || !http.responseComplete()) {
@@ -245,7 +237,7 @@ int requestToFile(freeink::SecureHttpClient* session, const std::string& url, co
 bool mintPasswordToken(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
                        const std::string& body, const Headers& headers, const std::string& tokenPath,
                        std::string& outToken) {
-  std::string response;
+  String response;
   constexpr size_t MAX_AUTH_RESPONSE = 8 * 1024;
   const int status = request(session, url, method, body, headers, response, MAX_AUTH_RESPONSE);
   if (status < 200 || status >= 300) return false;

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "activities/UiListActivity.h"
+#include "network/HttpDownloader.h"
 #include "util/PluginHttp.h"
 
 class HalFile;
@@ -217,13 +218,18 @@ class PluginCatalogActivity final : public UiListActivity {
   void fetchXmlList();
   void activateItem(int itemIndex);  // XML list: navigate into a folder, else download
   void downloadItem(const Item& item);
+  HttpDownloader::DownloadError downloadBundle(const Item& item);
+  HttpDownloader::DownloadError downloadBook(const Item& item);
+  HttpDownloader::DownloadError downloadFile(const std::string& url, const std::string& dest,
+                                             const std::string& user = {}, const std::string& password = {},
+                                             const pluginhttp::Headers& headers = {});
   void beginAuth();
   void pollAuth();
   bool refreshCredentialToken();  // password grant: mint a token from config creds
   // Load credentials and stream a JSON/XML browse response to the SD temp file.
   // Retries a password grant once on 401/403; displays failures and returns false.
   bool fetchBrowseResponse();
-  int apiRequest(const pluginhttp::RequestSpec& req, std::string& out);
+  int apiRequest(const pluginhttp::RequestSpec& req, String& out);
   pluginhttp::RequestSpec substitutedRequest(const pluginhttp::RequestSpec& req, const Item* item = nullptr) const;
   std::string substituted(std::string tpl, const Item* item) const;
   bool preventAutoSleep() override { return true; }

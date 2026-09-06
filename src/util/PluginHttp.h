@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ArduinoJson.h>
+#include <WString.h>
 
 #include <string>
 #include <utility>
@@ -73,13 +74,10 @@ void loadConfigFile(const std::string& file, Headers& out);
 // (repeated handshakes permanently fragment the heap); pass nullptr to use a
 // per-call stack client.
 
-// Request with the body collected in DRAM, capped at `maxResponse` with a
-// nothrow-probed growth (an oversized response fails the request instead of
-// aborting on low heap). Error statuses still return their body (OAuth
-// polling carries state in 4xx bodies). Returns HTTP status, -1 on transport
-// failure / truncation / cap.
+// Collects one checked DRAM buffer, capped at maxResponse. Returns HTTP status
+// (including OAuth polling's 4xx bodies), or -1 on OOM, truncation, or transport failure.
 int request(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
-            const std::string& body, const Headers& headers, std::string& out, size_t maxResponse);
+            const std::string& body, const Headers& headers, String& out, size_t maxResponse);
 
 // Same request, body streamed to a file on SD instead of DRAM.
 int requestToFile(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,

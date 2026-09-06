@@ -9,6 +9,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <MD5Builder.h>
+#include <Memory.h>
 #include <SecureHttpClient.h>
 #include <WiFi.h>
 #include <XmlParserUtils.h>
@@ -527,7 +528,7 @@ PluginCatalogActivity::PluginCatalogActivity(GfxRenderer& renderer, MappedInputM
 
 PluginCatalogActivity::~PluginCatalogActivity() = default;
 
-int PluginCatalogActivity::apiRequest(const pluginhttp::RequestSpec& req, std::string& out) {
+int PluginCatalogActivity::apiRequest(const pluginhttp::RequestSpec& req, String& out) {
   return pluginhttp::request(session.get(), req.url, req.method, req.body, req.headers, out, MAX_API_RESPONSE);
 }
 
@@ -977,7 +978,7 @@ void PluginCatalogActivity::computeInstallStatus() {
 void PluginCatalogActivity::beginAuth() {
   beginLoading();
 
-  std::string response;
+  String response;
   const int status = apiRequest(substitutedRequest(manifest.authReq), response);
   JsonDocument doc;
   if (status < 200 || status >= 300 || deserializeJson(doc, response) != DeserializationError::Ok) {
@@ -1008,7 +1009,7 @@ void PluginCatalogActivity::pollAuth() {
   substituteAll(req.url, "{device_code}", authDeviceCode);
   substituteAll(req.body, "{device_code}", authDeviceCode);
 
-  std::string response;
+  String response;
   const int status = apiRequest(req, response);
   if (status < 0) return;  // transient transport failure: keep polling
 
@@ -1047,105 +1048,103 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
   goHomeAfterCancel = false;
   requestUpdate(true);
 
-  // Multi-file bundle install: fetch every file in item.files from item.base
-  // into destDir/<subdir>/, creating intermediate folders. Each file reports
-  // its transferred byte count. Generic (a plugin installer, a theme pack, ...).
-  if (manifest.isBundle() && !item.files.empty()) {
-    const std::string subdir = substituted(manifest.bundleSubdir, &item);
-    // Reject path traversal in the subdir (a hostile catalog could escape).
-    if (subdir.empty() || subdir.find("..") != std::string::npos || subdir.front() == '/') {
-      fail(StrId::STR_DOWNLOAD_FAILED);
-      return;
-    }
-    std::string dir = manifest.destDir;
-    if (!dir.empty() && dir.back() == '/') dir.pop_back();
-    dir += '/';
-    dir += subdir;
-    if (!Storage.exists(dir.c_str()) && !Storage.mkdir(dir.c_str())) {
-      LOG_ERR("PCAT", "bundle mkdir failed: %s", dir.c_str());
-      fail(StrId::STR_DOWNLOAD_FAILED);
-      return;
-    }
-    std::string base = item.base;
-    if (!base.empty() && base.back() != '/') base += '/';
-    const size_t total = item.files.size();
-    // Written files, for rollback: a half-installed bundle folder would show
-    // up as a broken plugin/theme in the next discovery scan.
-    std::vector<std::string> written;
-    written.reserve(total);
-    const auto rollback = [&] {
-      for (const auto& path : written) Storage.remove(path.c_str());
-      Storage.rmdir(dir.c_str());  // only succeeds when the folder emptied out
-    };
-    for (size_t i = 0; i < total; i++) {
-      std::string rel = item.files[i];
-      while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
-      if (rel.empty() || rel.find("..") != std::string::npos) {
-        // A manifest listing traversal entries is hostile or broken either
-        // way; abort rather than install a bundle with silent holes.
-        LOG_ERR("PCAT", "unsafe bundle entry rejected: %s", item.files[i].c_str());
-        rollback();
-        fail(StrId::STR_DOWNLOAD_FAILED);
-        return;
-      }
-      downloadProgress = 0;
-      const std::string dest = dir + "/" + rel;
-      // Create any intermediate folders for nested files ("assets/icon.bin").
-      const size_t slash = dest.find_last_of('/');
-      if (slash != std::string::npos) {
-        const std::string parent = dest.substr(0, slash);
-        if (!Storage.exists(parent.c_str())) Storage.mkdir(parent.c_str());
-      }
-      dlLastRenderedPercent = -1;
-      dlLastProgressUpdateMs = 0;
-      const auto res = HttpDownloader::downloadToFile(
-          base + rel, dest,
-          [this](const size_t downloaded, const size_t total) { onDownloadProgress(downloaded, total); },
-          &cancelDownload);
-      if (res == HttpDownloader::ABORTED) {
-        rollback();
-        finishCancelledDownload();
-        return;
-      }
-      if (res != HttpDownloader::OK) {
-        LOG_ERR("PCAT", "bundle file failed: %s (%d)", rel.c_str(), static_cast<int>(res));
-        rollback();
-        fail(StrId::STR_DOWNLOAD_FAILED);
-        return;
-      }
-      written.push_back(dest);
-    }
-    emitBookDownloaded(manifestPath, written.empty() ? "" : written.front(), item.title);
-    // Bundles are how plugins install (plugin-store); pick up any new event
-    // subscriptions without a restart. Cheap: a few small manifest reads.
-    pluginevents::refreshSubscriptions();
+  const auto result = manifest.isBundle() && !item.files.empty() ? downloadBundle(item) : downloadBook(item);
+  if (result == HttpDownloader::ABORTED) {
+    finishCancelledDownload();
+  } else if (result != HttpDownloader::OK) {
+    LOG_ERR("PCAT", "Download failed: %d", static_cast<int>(result));
+    fail(StrId::STR_DOWNLOAD_FAILED);
+  } else {
     state = State::DONE;
-    statusMessage = item.title;
     requestUpdate();
-    return;
   }
+}
 
+HttpDownloader::DownloadError PluginCatalogActivity::downloadFile(const std::string& url, const std::string& dest,
+                                                                  const std::string& user, const std::string& password,
+                                                                  const pluginhttp::Headers& headers) {
+  downloadProgress = 0;
+  dlLastRenderedPercent = -1;
+  dlLastProgressUpdateMs = 0;
+  return HttpDownloader::downloadToFile(
+      url, dest, [this](const size_t downloaded, const size_t total) { onDownloadProgress(downloaded, total); },
+      &cancelDownload, user, password, headers);
+}
+
+HttpDownloader::DownloadError PluginCatalogActivity::downloadBundle(const Item& item) {
+  const std::string subdir = substituted(manifest.bundleSubdir, &item);
+  // Reject path traversal in the subdir (a hostile catalog could escape).
+  if (subdir.empty() || subdir.find("..") != std::string::npos || subdir.front() == '/') {
+    return HttpDownloader::FILE_ERROR;
+  }
+  std::string dir = manifest.destDir;
+  if (!dir.empty() && dir.back() == '/') dir.pop_back();
+  dir += '/';
+  dir += subdir;
+  if (!Storage.exists(dir.c_str()) && !Storage.mkdir(dir.c_str())) {
+    LOG_ERR("PCAT", "bundle mkdir failed: %s", dir.c_str());
+    return HttpDownloader::FILE_ERROR;
+  }
+  std::string base = item.base;
+  if (!base.empty() && base.back() != '/') base += '/';
+  const size_t total = item.files.size();
+  // Written files, for rollback: a half-installed bundle folder would show
+  // up as a broken plugin/theme in the next discovery scan.
+  std::vector<std::string> written;
+  written.reserve(total);
+  bool complete = false;
+  ScopedCleanup rollback{[&] {
+    if (complete) return;
+    for (const auto& path : written) Storage.remove(path.c_str());
+    Storage.rmdir(dir.c_str());  // only succeeds when the folder emptied out
+  }};
+  for (size_t i = 0; i < total; i++) {
+    std::string rel = item.files[i];
+    while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
+    if (rel.empty() || rel.find("..") != std::string::npos) {
+      // A manifest listing traversal entries is hostile or broken either
+      // way; abort rather than install a bundle with silent holes.
+      LOG_ERR("PCAT", "unsafe bundle entry rejected: %s", item.files[i].c_str());
+      return HttpDownloader::FILE_ERROR;
+    }
+    const std::string dest = dir + "/" + rel;
+    // Create any intermediate folders for nested files ("assets/icon.bin").
+    const size_t slash = dest.find_last_of('/');
+    if (slash != std::string::npos) {
+      const std::string parent = dest.substr(0, slash);
+      if (!Storage.exists(parent.c_str())) Storage.mkdir(parent.c_str());
+    }
+    const auto result = downloadFile(base + rel, dest);
+    if (result != HttpDownloader::OK) return result;
+    written.push_back(dest);
+  }
+  complete = true;
+  emitBookDownloaded(manifestPath, written.empty() ? "" : written.front(), item.title);
+  // Bundles are how plugins install (plugin-store); pick up any new event
+  // subscriptions without a restart. Cheap: a few small manifest reads.
+  pluginevents::refreshSubscriptions();
+  return HttpDownloader::OK;
+}
+
+HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& item) {
   // Resolve the file URL: either the template itself, or one API hop away.
   std::string fileUrl;
   if (!manifest.dlUrlPath.empty()) {
-    std::string response;
+    String response;
     const int status = apiRequest(substitutedRequest(manifest.downloadReq, &item), response);
     if (status < 200 || status >= 300) {
-      fail(StrId::STR_DOWNLOAD_FAILED);
-      return;
+      return HttpDownloader::HTTP_ERROR;
     }
     JsonDocument doc;
     if (deserializeJson(doc, response) != DeserializationError::Ok) {
-      fail(StrId::STR_DOWNLOAD_FAILED);
-      return;
+      return HttpDownloader::HTTP_ERROR;
     }
     fileUrl = variantToString(resolvePath(doc.as<JsonVariantConst>(), manifest.dlUrlPath));
   } else {
     fileUrl = substituted(manifest.downloadReq.url, &item);
   }
   if (fileUrl.empty()) {
-    fail(StrId::STR_DOWNLOAD_FAILED);
-    return;
+    return HttpDownloader::FILE_ERROR;
   }
 
   const char* folder = manifest.destDir.c_str();
@@ -1161,8 +1160,7 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
       StringUtils::sanitizeFilenamePreservingExtension(substituted(manifest.filenameTpl, &item));
   if (filename.empty() || filename.find("..") != std::string::npos || filename.find('/') != std::string::npos) {
     LOG_ERR("PCAT", "unsafe filename rejected: %s", filename.c_str());
-    fail(StrId::STR_DOWNLOAD_FAILED);
-    return;
+    return HttpDownloader::FILE_ERROR;
   }
   std::string dest;
   dest.reserve((haveFolder ? manifest.destDir.size() : 0) + 1 + filename.size());
@@ -1177,24 +1175,11 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
   const std::vector<HttpDownloader::Header> fileHeaders = manifest.dlUrlPath.empty()
                                                               ? substitutedHeaders(manifest.downloadReq.headers, &item)
                                                               : std::vector<HttpDownloader::Header>{};
-  dlLastRenderedPercent = -1;
-  dlLastProgressUpdateMs = 0;
   session.reset();  // free browse TLS before the large file GET
-  const auto result = HttpDownloader::downloadToFile(
-      fileUrl, dest, [this](const size_t downloaded, const size_t total) { onDownloadProgress(downloaded, total); },
-      &cancelDownload, dlUser, dlPass, fileHeaders);
+  const auto result = downloadFile(fileUrl, dest, dlUser, dlPass, fileHeaders);
   session.reset(new (std::nothrow) freeink::SecureHttpClient());
   if (session) session->setReuse(true);
-
-  if (result == HttpDownloader::ABORTED) {
-    finishCancelledDownload();
-    return;
-  }
-  if (result != HttpDownloader::OK) {
-    LOG_ERR("PCAT", "Download failed: %d", static_cast<int>(result));
-    fail(StrId::STR_DOWNLOAD_FAILED);
-    return;
-  }
+  if (result != HttpDownloader::OK) return result;
   clearBookCache(dest);
 
   // Optional per-book sidecar (e.g. a service book id keyed by the file's
@@ -1231,9 +1216,7 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
   }
 
   emitBookDownloaded(manifestPath, dest, item.title);
-  state = State::DONE;
-  statusMessage = item.title;
-  requestUpdate();
+  return HttpDownloader::OK;
 }
 
 // Every state except BROWSING/LIST_PICKER consumes the pass here; the base

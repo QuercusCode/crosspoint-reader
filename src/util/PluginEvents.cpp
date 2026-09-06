@@ -295,7 +295,7 @@ bool deliverLine(const DrainManifest& mf, const std::string& lineText, std::stri
       }
       return st;
     }
-    std::string response;
+    String response;
     return pluginhttp::request(nullptr, drainSubstituted(handler->req.url, tok, config, meta, vars, ts),
                                handler->req.method, drainSubstituted(handler->req.body, tok, config, meta, vars, ts),
                                headers, response, MAX_EVENT_RESPONSE);
