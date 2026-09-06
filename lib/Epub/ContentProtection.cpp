@@ -35,6 +35,17 @@ WolfsslCrypto& crypto() {
   return instance;
 }
 
+void reclaimContentCaches() {
+  // miniz needs a contiguous inflate state plus stream buffers and metadata.
+  // ensureFree() checks total bytes and cannot detect a fragmented heap.
+  constexpr size_t CONTENT_WORKING_SET = 64 * 1024;
+  const size_t before = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  if (before >= CONTENT_WORKING_SET) return;
+  freeink::MemoryManager::instance().clearCaches();
+  LOG_DBG("CPRO", "Cache reclaim: max_block=%u -> %u, free=%u", static_cast<unsigned>(before),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreeHeap()));
+}
+
 // ByteSource over an SD file (read-only). One open handle per instance.
 class SdByteSource : public ByteSource {
  public:
@@ -70,18 +81,13 @@ class ProtectedBookDecryptor : public ContentDecryptor {
     // Reuse one open SD handle for the whole reader session rather than
     // reconstructing and reopening it per encrypted entry.
     if (!source_.ensureOpen()) return false;
-    // miniz's inflate state (allocated inside decryptEntryToSink) embeds a
-    // single ~33KB contiguous window. SD card fonts hold large resident blocks
-    // that fragment the heap below that, so the per-chapter decrypt fails and
-    // the reader shows "Invalid book / DRM protected file" (sd-plugins #14).
-    // When the largest free block is marginal, evict rebuildable caches (the
-    // SD-font mini tables, via the sinks GfxRenderer registers) to reclaim a
-    // contiguous window; fonts fault back in on the next measurement pass.
-    constexpr size_t kInflateWindow = 40 * 1024;
-    if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < kInflateWindow) {
-      freeink::MemoryManager::instance().ensureFree(kInflateWindow);
+    reclaimContentCaches();
+    if (!book_->decryptEntryToSink(source_, crypto(), itemPath, sink, context)) {
+      LOG_ERR("CPRO", "Decrypt failed: %s (%s), free=%u max_block=%u", itemPath.c_str(), book_->lastError().c_str(),
+              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      return false;
     }
-    return book_->decryptEntryToSink(source_, crypto(), itemPath, sink, context);
+    return true;
   }
 
  private:
@@ -106,6 +112,7 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
   // once; plain EPUBs return immediately through the normal reader path.
   ZipScan scan;
   if (!scan.open(source) || !scan.find("META-INF/encryption.xml")) return nullptr;
+  reclaimContentCaches();
 
   // A book carrying encryption.xml may only obfuscate its embedded fonts
   // (not content-protected). The SDK demands the credential only after parsing

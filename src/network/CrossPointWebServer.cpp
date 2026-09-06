@@ -1817,13 +1817,12 @@ void CrossPointWebServer::handleRelay() {
     resetTaskWatchdogIfSubscribed();
     return false;  // never aborts; only feeds
   };
-  // The response body is accumulated once here, then streamed out escaped
-  // (see below). The copy is hard-capped: an uncapped std::string growth
-  // abort()s under -fno-exceptions on low heap. Large payloads must use
-  // /api/fetch, which streams to SD without buffering.
+  // String reports allocation failure, including growth of chunked responses.
+  // Keep one bounded body buffer; larger payloads use /api/fetch.
   static constexpr size_t RELAY_BODY_LIMIT = 32 * 1024;
-  std::string respBody;
+  String respBody;
   bool tooLarge = false;
+  bool noMemory = false;
   bool sized = false;
   const int status = http.sendRequest(
       method.c_str(), reinterpret_cast<const uint8_t*>(body.data()), body.size(),
@@ -1832,24 +1831,33 @@ void CrossPointWebServer::handleRelay() {
           sized = true;
           if (http.hasContentLength()) {
             const size_t contentLength = http.getContentLength();
-            // Known-oversized: refuse before buffering a single chunk. Also bail
-            // if the reserve would not fit the largest free block, since the
-            // std::string growth that follows would abort() under -fno-exceptions.
-            if (contentLength > RELAY_BODY_LIMIT || contentLength + 4096 > ESP.getMaxAllocHeap()) {
+            if (contentLength > RELAY_BODY_LIMIT) {
               tooLarge = true;
               return false;
             }
-            respBody.reserve(contentLength);
+            if (!respBody.reserve(contentLength)) {
+              noMemory = true;
+              return false;
+            }
           }
         }
-        if (respBody.size() + len > RELAY_BODY_LIMIT) {
+        if (len > RELAY_BODY_LIMIT - respBody.length()) {
           tooLarge = true;
           return false;
         }
-        respBody.append(reinterpret_cast<const char*>(data), len);
+        if (!respBody.concat(reinterpret_cast<const char*>(data), len)) {
+          noMemory = true;
+          return false;
+        }
         return true;
       },
       feedWatchdog);
+  if (noMemory) {
+    LOG_ERR("WEB", "OOM: relay response, heap %u, max block %u", (unsigned)ESP.getFreeHeap(),
+            (unsigned)ESP.getMaxAllocHeap());
+    server->send(503, "application/json", "{\"error\":\"insufficient memory for response\"}");
+    return;
+  }
   if (tooLarge) {
     LOG_ERR("WEB", "Relay response exceeds %u byte cap (url=%s); plugin should use /api/fetch",
             (unsigned)RELAY_BODY_LIMIT, url.c_str());
@@ -1865,7 +1873,7 @@ void CrossPointWebServer::handleRelay() {
   // Same truncation trap as /api/fetch: a 2xx with an incomplete body would
   // hand the plugin a silently cut-short payload.
   if (status >= 200 && status < 300 && !http.responseComplete()) {
-    LOG_ERR("WEB", "Relay truncated: %u bytes (heap %u): %s", (unsigned)respBody.size(), (unsigned)ESP.getFreeHeap(),
+    LOG_ERR("WEB", "Relay truncated: %u bytes (heap %u): %s", (unsigned)respBody.length(), (unsigned)ESP.getFreeHeap(),
             url.c_str());
     server->send(502, "application/json", "{\"error\":\"response truncated\"}");
     return;
@@ -1889,6 +1897,13 @@ void CrossPointWebServer::handleRelay() {
   // Stream {"status":N,"headers":[...],"body":"<escaped>"} in chunks so peak RAM
   // is one copy of the body, not three. The body is JSON-string escaped on the
   // fly into a small reused buffer flushed every ~512 bytes.
+  // Allocate the escape buffer before committing the response headers.
+  String chunk;
+  if (!chunk.reserve(576)) {
+    LOG_ERR("WEB", "OOM: relay escape buffer");
+    server->send(503, "application/json", "{\"error\":\"insufficient memory for response\"}");
+    return;
+  }
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
   server->send(200, "application/json", "");
   char prefix[64];
@@ -1896,9 +1911,8 @@ void CrossPointWebServer::handleRelay() {
   server->sendContent(prefix);
   server->sendContent(headersJson);
   server->sendContent(",\"body\":\"");
-  std::string chunk;
-  chunk.reserve(576);
-  for (const char c : respBody) {
+  for (size_t i = 0; i < respBody.length(); ++i) {
+    const char c = respBody[i];
     switch (c) {
       case '"':
         chunk += "\\\"";
@@ -1931,13 +1945,13 @@ void CrossPointWebServer::handleRelay() {
         }
         break;
     }
-    if (chunk.size() >= 512) {
+    if (chunk.length() >= 512) {
       server->sendContent(chunk.c_str());
-      chunk.clear();
+      chunk.remove(0);
       resetTaskWatchdogIfSubscribed();  // each sendContent() is a blocking network write
     }
   }
-  if (!chunk.empty()) server->sendContent(chunk.c_str());
+  if (chunk.length()) server->sendContent(chunk.c_str());
   server->sendContent("\"}");
   server->sendContent("");
 }
