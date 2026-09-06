@@ -14,9 +14,7 @@ namespace freeink {
 class SecureHttpClient;
 }
 
-// One installed SD plugin, as surfaced in the plugin picker. Web-only plugins
-// (plugin.js without a device.json) are listed but inert — an install is
-// visibly installed, while their UI lives in the web interface.
+// Picker entry; an empty manifestPath marks an inert browser-only plugin.
 struct PluginRef {
   std::string name;          // folder name
   std::string title;         // from device.json or manifest.json (falls back to name)
@@ -24,22 +22,14 @@ struct PluginRef {
   std::string manifestPath;  // device.json path, "" for a web-only plugin
 };
 
-// Scans every plugin folder across the SD plugin roots. Called on demand
-// (when the picker opens), so nothing stays resident while it is closed.
+// Rescan plugin roots on demand; metadata is owned by the picker.
 std::vector<PluginRef> discoverPlugins();
 
-// Cheap check for the home screen: true if any plugin folder exists (a folder
-// under a plugin root holding plugin.js or device.json). Reads no manifests.
+// True if a plugin.js or device.json is installed; reads no manifests.
 bool anyPluginInstalled();
 
-/**
- * The single on-device Plugins screen: a picker over the installed
- * device.json plugins, morphing into the generic catalog browser the picked
- * plugin's manifest drives. The manifest is pure data (URL/header/body
- * templates plus JSON field paths), so a new service is an SD card file, not
- * firmware. Anything the vocabulary cannot express stays in the plugin's
- * browser-side plugin.js.
- */
+// Manifest-driven picker, catalog, download, and sign-in screens.
+// See docs/sd-plugins.md for the device.json schema.
 class PluginCatalogActivity final : public UiListActivity {
  public:
   enum class State {
@@ -56,11 +46,8 @@ class PluginCatalogActivity final : public UiListActivity {
     AUTH
   };
 
-  // showOpds prepends an "OPDS Browser" row (home launch with OPDS servers
-  // configured). rootMode: Back from the picker returns to the home screen
-  // (home launch) rather than the previous activity (Settings launch).
-  // Both out of line: ctor and dtor instantiate ~unique_ptr<SecureHttpClient>,
-  // which needs the complete type.
+  // showOpds adds the OPDS row; rootMode returns Home instead of popping to Settings.
+  // Out-of-line construction/destruction needs the complete SecureHttpClient type.
   explicit PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool showOpds = false,
                                  bool rootMode = false);
   ~PluginCatalogActivity() override;
@@ -71,44 +58,26 @@ class PluginCatalogActivity final : public UiListActivity {
 
  private:
   struct Manifest {
-    // {token} comes from tokenFile at tokenPath (dotted JSON path). {cfg.KEY}
-    // comes from a flat JSON config file (configFile), letting a plugin store
-    // user-entered values (e.g. a server URL and credentials) outside the
-    // manifest instead of hardcoding them.
+    // Shared on-SD token and flat {cfg.KEY} configuration.
     std::string tokenFile, tokenPath;
     std::string configFile;
-    // "json" (default) parses a paged JSON list. "xml" walks a repeating XML
-    // element (a WebDAV multistatus, an OPDS/Atom feed, ...) with optional
-    // folder navigation — the format is data, so the firmware knows no protocol.
+    // JSON uses dotted field paths; XML uses element/attribute selectors.
     std::string browseFormat;
     // Browse request: templates may use {token}, {cfg.KEY}, {page}, {limit}.
-    std::string browseUrl, browseMethod, browseBody;
-    std::vector<std::pair<std::string, std::string>> browseHeaders;
+    pluginhttp::RequestSpec browseReq;
     std::string itemsPath;  // JSON: dotted path to the item array; "" = response root
     // JSON field paths (dotted); XML field selectors ("elem", "elem@attr", "@attr").
     std::string titlePath, authorPath, idPath, urlPath;
-    // Optional catalog-of-plugins support: a version field on each item. When
-    // set, each row is badged Installed / Update by comparing the catalog
-    // version to the installed plugin's manifest (located by folder id across
-    // the plugin roots). Generic: the plugin store is just a catalog whose
-    // items are installable plugin bundles keyed by folder name.
+    // Compare this item field against the installed manifest version for badges.
     std::string versionPath;
     bool tracksInstalls() const { return !versionPath.empty(); }
     int pageSize = 8;
-    // Optional named sub-catalogs ("lists"): each entry may override the
-    // browse url/body, so one service exposes several server-side views
-    // (categories, shelves, sort orders). When present (JSON lists only), a
-    // picker screen precedes browsing and Back returns to it.
+    // Named JSON views override the browse URL/body; Back returns to their picker.
     struct BrowseList {
       std::string title, url, body;
     };
     std::vector<BrowseList> browseLists;
-    // Optional server-side search. When a search url or body is set, the
-    // browsing header gains a search action; the entered text substitutes
-    // {query} (URL-encoded, for a GET url) or {query_raw} (verbatim, for a JSON
-    // body) into these templates. Either may be empty to reuse the browse
-    // url/body (e.g. an endpoint that searches via a body field only). Results
-    // share the browse item shape. JSON lists only.
+    // JSON search overrides URL/body independently; empty fields reuse browse.
     std::string searchUrl, searchBody;
     bool hasSearch() const { return (!searchUrl.empty() || !searchBody.empty()) && browseFormat != "xml"; }
     // XML list options:
@@ -119,29 +88,19 @@ class PluginCatalogActivity final : public UiListActivity {
     std::vector<std::string> xmlExtensions;  // allowed file extensions ("" = all)
 
     bool isXmlList() const { return browseFormat == "xml"; }
-    // Download: templates may additionally use {id}, {title}, {author}, {url}.
-    // When dlUrlPath is empty, the substituted dlUrl IS the file URL;
-    // otherwise a request is made and the file URL read from dlUrlPath.
-    std::string dlUrl, dlMethod, dlBody, dlUrlPath;
-    std::vector<std::pair<std::string, std::string>> dlHeaders;
+    // Empty dlUrlPath means a direct URL; otherwise resolve it through an API hop.
+    pluginhttp::RequestSpec downloadReq;
+    std::string dlUrlPath;
     // Optional HTTP Basic credentials for the file GET; templates.
     std::string dlUser, dlPass;
     std::string destDir, filenameTpl;
-    // Optional multi-file "bundle" download: instead of one file, the selected
-    // item carries a base URL and a JSON array of relative paths, and every file
-    // is fetched into destDir/<subdir>/. Generic (a plugin installer, a theme
-    // pack, ...); when bundleFilesPath is set it replaces the single-file path.
-    // bundleBasePath/bundleFilesPath are dotted field paths within the item;
-    // bundleSubdir is a template (default {id}).
+    // Bundle item fields: base URL and relative paths, installed under destDir/subdir.
     std::string bundleBasePath, bundleFilesPath, bundleSubdir;
     bool isBundle() const { return !bundleFilesPath.empty(); }
     // Optional sidecar written after a successful download; templates may use
     // {id}, {title}, {md5} (MD5 of the destination path).
     std::string sidecarPath, sidecarBody;
-    // Optional on-device sign-in. "device_code": interactive OAuth device-code
-    // (shows a code + QR, polls). "password": a silent credential grant that
-    // mints a token from stored config credentials before browsing. Both write
-    // the token to tokenFile at tokenPath.
+    // Both grants write the shared token file; device_code also shows a QR/code.
     std::string authType;  // "device_code" (default) or "password"
     pluginhttp::RequestSpec authReq, pollReq;
     std::string authCodePath, authVerifyPath, authDeviceCodePath;
@@ -165,8 +124,6 @@ class PluginCatalogActivity final : public UiListActivity {
   std::string catalogTitle;
   Manifest manifest;
   State state = State::PLUGIN_PICKER;
-  // Picker state: the installed device.json plugins, the optional OPDS row,
-  // and where Back from the picker goes (see the constructor).
   std::vector<PluginRef> installedPlugins;
   bool showOpds = false;
   bool rootMode = false;
@@ -177,17 +134,13 @@ class PluginCatalogActivity final : public UiListActivity {
   std::vector<freeink::ui::ListItem> rowItems;
   bool rowsDirty = true;
   std::string token;
-  std::vector<std::pair<std::string, std::string>> config;  // {cfg.KEY} values
+  pluginhttp::Headers config;  // {cfg.KEY} values
   int page = 1;
   bool hasMore = false;
   int currentList = -1;  // index into manifest.browseLists; -1 = none/default
-  // Active server-side search: the raw query text and a flag that swaps the
-  // browse url/body for the search templates. Cleared on Back out of results.
   std::string searchQuery;
   bool searchActive = false;
-  // One TLS session reused across browse requests (setReuse): repeated
-  // handshakes permanently fragment the heap. Freed on exit; a request falls
-  // back to a stack client when the allocation failed.
+  // Reuse browse TLS; release in the picker and before a single-file download.
   std::unique_ptr<freeink::SecureHttpClient> session;
   // XML-list folder navigation: current container URL and the trail back out.
   std::string browseCurrentUrl;
@@ -211,9 +164,6 @@ class PluginCatalogActivity final : public UiListActivity {
   // overlay in render() after the app has painted.
   freeink::ui::Rect authQrRect{};
 
-  // Picker <-> catalog transitions. The picker discovers the installed
-  // plugins; opening one sets manifestPath/catalogTitle and enters the
-  // catalog flow; leaving a catalog resets its state and returns here.
   void enterPluginPicker();
   void enterCatalog();
   void exitCatalog();
@@ -223,16 +173,12 @@ class PluginCatalogActivity final : public UiListActivity {
   bool saveToken(const std::string& value);
   // Enters State::ERROR with a translated message and requests a redraw.
   void fail(StrId msg);
-  // Enters State::LOADING with the standard "Loading..." status and requests
-  // an immediate redraw, ahead of a fetch that is about to start.
+  // Paint Loading before starting a blocking fetch.
   void beginLoading();
   void checkAndConnectWifi();
   void launchWifiSelection();
-  // Wi-Fi is up (or a token just arrived): open the list picker when the
-  // manifest defines browse lists, else fetch the first page directly.
+  // Show named lists when present, otherwise fetch the first page.
   void startBrowse();
-  // Server-side search (manifest.hasSearch()): prompt for a query on the
-  // keyboard, then run it via the search templates.
   static void onSearchEvent(const freeink::ui::ActionEvent& event, void* user);
   static void onCancelEvent(const freeink::ui::ActionEvent& event, void* user);
   void launchSearch();
@@ -242,13 +188,10 @@ class PluginCatalogActivity final : public UiListActivity {
   void finishCancelledDownload();
   // Header label for the browsing screen (list title / search / page suffix).
   std::string browsingHeaderLabel() const;
-  // Synthetic pager rows, mirroring the OPDS browser: "Previous page" ahead
-  // of the items past page 1, "Next page" after them while more pages exist.
+  // JSON pagination adds rows before/after the current items.
   bool prevRowVisible() const;
   bool nextRowVisible() const;
-  // Rows on the current screen: pager rows + items (BROWSING), or the browse
-  // lists (LIST_PICKER); zero in every other state, which disables the base
-  // list protocol (routing, navigation) there.
+  // Zero outside list states disables the base list protocol.
   int rowCount() const;
   int listCount() const override { return rowCount(); }
   // Row dispatch: pager rows page, picker rows pick, item rows open/download.
@@ -267,12 +210,9 @@ class PluginCatalogActivity final : public UiListActivity {
   const std::string& activeBrowseUrl() const;
   const std::string& activeBrowseBody() const;
   // Copies `headers` with `substituted()` applied to each value.
-  std::vector<std::pair<std::string, std::string>> substitutedHeaders(
-      const std::vector<std::pair<std::string, std::string>>& headers, const Item* item) const;
+  pluginhttp::Headers substitutedHeaders(const pluginhttp::Headers& headers, const Item* item) const;
   void fetchPage(int newPage);
-  // Fills each item's install/update badge from its installed manifest, once
-  // per page load (SD reads stay off the render path). No-op unless the
-  // manifest tracksInstalls().
+  // Read installed versions once per page, outside the render path.
   void computeInstallStatus();
   void fetchXmlList();
   void activateItem(int itemIndex);  // XML list: navigate into a folder, else download
@@ -280,18 +220,11 @@ class PluginCatalogActivity final : public UiListActivity {
   void beginAuth();
   void pollAuth();
   bool refreshCredentialToken();  // password grant: mint a token from config creds
-  // Substitutes + runs the browse request, streaming the response body to
-  // `destPath` on the SD card (a page of catalog JSON can exceed what DRAM
-  // holds), retrying once after a fresh password grant on 401/403. Returns
-  // HTTP status (or -1 on transport failure).
-  int browseRequestToFile(const std::string& urlTemplate, const std::string& bodyTemplate, const char* destPath);
-  // Returns the HTTP status, or -1 on transport failure / truncation / cap.
-  // `out` holds the body for any real status (error bodies carry OAuth codes).
-  int apiRequest(const std::string& url, const std::string& method, const std::string& body,
-                 const std::vector<std::pair<std::string, std::string>>& headers, std::string& out);
-  // Same request, but the body goes to a file instead of DRAM.
-  int apiRequestToFile(const std::string& url, const std::string& method, const std::string& body,
-                       const std::vector<std::pair<std::string, std::string>>& headers, const char* destPath);
+  // Load credentials and stream a JSON/XML browse response to the SD temp file.
+  // Retries a password grant once on 401/403; displays failures and returns false.
+  bool fetchBrowseResponse();
+  int apiRequest(const pluginhttp::RequestSpec& req, std::string& out);
+  pluginhttp::RequestSpec substitutedRequest(const pluginhttp::RequestSpec& req, const Item* item = nullptr) const;
   std::string substituted(std::string tpl, const Item* item) const;
   bool preventAutoSleep() override { return true; }
 };

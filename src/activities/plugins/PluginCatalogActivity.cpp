@@ -37,7 +37,6 @@
 namespace fui = freeink::ui;
 
 // Template/JSON/transport primitives shared with the plugin event drain.
-using pluginhttp::readHeaders;
 using pluginhttp::resolvePath;
 using pluginhttp::segIsIndex;
 using pluginhttp::splitPath;
@@ -408,10 +407,7 @@ bool PluginCatalogActivity::loadManifest() {
 
   JsonVariantConst browse = doc["browse"];
   manifest.browseFormat = browse["format"] | "json";
-  manifest.browseUrl = browse["url"] | "";
-  manifest.browseMethod = browse["method"] | "GET";
-  manifest.browseBody = browse["body"] | "";
-  readHeaders(browse["headers"], manifest.browseHeaders);
+  pluginhttp::readRequest(browse, "GET", manifest.browseReq);
   manifest.itemsPath = browse["items"] | "";
   manifest.titlePath = browse["fields"]["title"] | (manifest.isXmlList() ? "" : "title");
   manifest.authorPath = browse["fields"]["author"] | "";
@@ -421,6 +417,7 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.pageSize = browse["page_size"] | 8;
   // Documented bounds: each row costs an Item (strings) and a screen slot.
   manifest.pageSize = std::clamp(manifest.pageSize, 1, MAX_PAGE_SIZE);
+  manifest.browseLists.reserve(browse["lists"].size());
   for (JsonVariantConst l : browse["lists"].as<JsonArrayConst>()) {
     Manifest::BrowseList entry;
     entry.title = l["title"] | "";
@@ -434,15 +431,13 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.xmlContainer = browse["container_element"] | "";
   manifest.xmlSkipSelf = browse["skip_self"] | false;
   manifest.xmlResolveUrls = browse["resolve_urls"] | false;
+  manifest.xmlExtensions.reserve(browse["extensions"].size());
   for (JsonVariantConst ext : browse["extensions"].as<JsonArrayConst>()) {
     if (ext.is<const char*>()) manifest.xmlExtensions.emplace_back(ext.as<const char*>());
   }
 
   JsonVariantConst dl = doc["download"];
-  manifest.dlUrl = dl["url"] | "";
-  manifest.dlMethod = dl["method"] | "GET";
-  manifest.dlBody = dl["body"] | "";
-  readHeaders(dl["headers"], manifest.dlHeaders);
+  pluginhttp::readRequest(dl, "GET", manifest.downloadReq);
   manifest.dlUrlPath = dl["url_path"] | "";
   manifest.dlUser = dl["username"] | "";
   manifest.dlPass = dl["password"] | "";
@@ -453,7 +448,7 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.bundleFilesPath = dl["bundle"]["files"] | "";
   manifest.bundleSubdir = dl["bundle"]["subdir"] | "{id}";
   // XML-list items already carry the file URL; default the template to it.
-  if (manifest.isXmlList() && manifest.dlUrl.empty()) manifest.dlUrl = "{url}";
+  if (manifest.isXmlList() && manifest.downloadReq.url.empty()) manifest.downloadReq.url = "{url}";
   manifest.sidecarPath = dl["sidecar"]["path"] | "";
   manifest.sidecarBody = dl["sidecar"]["body"] | "";
 
@@ -469,7 +464,7 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.authTokenPath = auth["token_path"] | "access_token";
   manifest.authErrorPath = auth["error_path"] | "error";
 
-  return !manifest.browseUrl.empty();
+  return !manifest.browseReq.url.empty();
 }
 
 bool PluginCatalogActivity::saveToken(const std::string& value) {
@@ -494,12 +489,17 @@ void PluginCatalogActivity::beginLoading() {
   requestUpdate(true);
 }
 
-std::vector<std::pair<std::string, std::string>> PluginCatalogActivity::substitutedHeaders(
-    const std::vector<std::pair<std::string, std::string>>& headers, const Item* item) const {
-  std::vector<std::pair<std::string, std::string>> out;
+pluginhttp::Headers PluginCatalogActivity::substitutedHeaders(const pluginhttp::Headers& headers,
+                                                              const Item* item) const {
+  pluginhttp::Headers out;
   out.reserve(headers.size());
   for (const auto& h : headers) out.emplace_back(h.first, substituted(h.second, item));
   return out;
+}
+
+pluginhttp::RequestSpec PluginCatalogActivity::substitutedRequest(const pluginhttp::RequestSpec& req,
+                                                                  const Item* item) const {
+  return {substituted(req.url, item), req.method, substituted(req.body, item), substitutedHeaders(req.headers, item)};
 }
 
 std::string PluginCatalogActivity::substituted(std::string tpl, const Item* item) const {
@@ -527,16 +527,8 @@ PluginCatalogActivity::PluginCatalogActivity(GfxRenderer& renderer, MappedInputM
 
 PluginCatalogActivity::~PluginCatalogActivity() = default;
 
-int PluginCatalogActivity::apiRequest(const std::string& url, const std::string& method, const std::string& body,
-                                      const std::vector<std::pair<std::string, std::string>>& headers,
-                                      std::string& out) {
-  return pluginhttp::request(session.get(), url, method, body, headers, out, MAX_API_RESPONSE);
-}
-
-int PluginCatalogActivity::apiRequestToFile(const std::string& url, const std::string& method, const std::string& body,
-                                            const std::vector<std::pair<std::string, std::string>>& headers,
-                                            const char* destPath) {
-  return pluginhttp::requestToFile(session.get(), url, method, body, headers, destPath, MAX_BROWSE_RESPONSE);
+int PluginCatalogActivity::apiRequest(const pluginhttp::RequestSpec& req, std::string& out) {
+  return pluginhttp::request(session.get(), req.url, req.method, req.body, req.headers, out, MAX_API_RESPONSE);
 }
 
 void PluginCatalogActivity::onEnter() {
@@ -753,50 +745,44 @@ bool PluginCatalogActivity::refreshCredentialToken() {
   return true;
 }
 
-int PluginCatalogActivity::browseRequestToFile(const std::string& urlTemplate, const std::string& bodyTemplate,
-                                               const char* destPath) {
-  auto build = [&](std::string& url, std::string& body, std::vector<std::pair<std::string, std::string>>& headers) {
-    url = substituted(urlTemplate, nullptr);
-    body = substituted(bodyTemplate, nullptr);
-    headers = substitutedHeaders(manifest.browseHeaders, nullptr);
-  };
-  std::string url, body;
-  std::vector<std::pair<std::string, std::string>> headers;
-  build(url, body, headers);
-  int status = apiRequestToFile(url, manifest.browseMethod, body, headers, destPath);
-  // A password-grant token expires; on 401/403 mint a fresh one and retry once.
-  if ((status == 401 || status == 403) && manifest.hasPasswordGrant() && refreshCredentialToken()) {
-    build(url, body, headers);
-    status = apiRequestToFile(url, manifest.browseMethod, body, headers, destPath);
-  }
-  return status;
-}
-
-void PluginCatalogActivity::fetchXmlList() {
+bool PluginCatalogActivity::fetchBrowseResponse() {
   loadConfig();
   if (!loadToken() && !(manifest.hasPasswordGrant() && refreshCredentialToken())) {
     state = State::NO_TOKEN;
     requestUpdate();
-    return;
+    return false;
   }
-  if (manifest.xmlItem.empty()) {
-    fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
-    return;
+  if (manifest.isXmlList()) {
+    if (manifest.xmlItem.empty()) {
+      fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
+      return false;
+    }
+    if (browseCurrentUrl.empty()) browseCurrentUrl = substituted(manifest.browseReq.url, nullptr);
   }
-  if (browseCurrentUrl.empty()) browseCurrentUrl = substituted(manifest.browseUrl, nullptr);
-
-  const int status = browseRequestToFile(browseCurrentUrl, manifest.browseBody, BROWSE_TMP_PATH);
+  const auto run = [&] {
+    const pluginhttp::RequestSpec req = {
+        substituted(manifest.isXmlList() ? browseCurrentUrl : activeBrowseUrl(), nullptr), manifest.browseReq.method,
+        substituted(manifest.isXmlList() ? manifest.browseReq.body : activeBrowseBody(), nullptr),
+        substitutedHeaders(manifest.browseReq.headers, nullptr)};
+    return pluginhttp::requestToFile(session.get(), req.url, req.method, req.body, req.headers, BROWSE_TMP_PATH,
+                                     MAX_BROWSE_RESPONSE);
+  };
+  int status = run();
+  // Rebuild templates with the refreshed token; retry only once.
+  if ((status == 401 || status == 403) && manifest.hasPasswordGrant() && refreshCredentialToken()) status = run();
+  if (status >= 200 && status < 300) return true;  // includes WebDAV's 207 Multi-Status
+  Storage.remove(BROWSE_TMP_PATH);
   if (status == 401 || status == 403) {
-    Storage.remove(BROWSE_TMP_PATH);
     state = State::NO_TOKEN;
     requestUpdate();
-    return;
-  }
-  if (status < 200 || status >= 300) {  // 207 Multi-Status counts as success
-    Storage.remove(BROWSE_TMP_PATH);
+  } else {
     fail(StrId::STR_FETCH_FEED_FAILED);
-    return;
   }
+  return false;
+}
+
+void PluginCatalogActivity::fetchXmlList() {
+  if (!fetchBrowseResponse()) return;
 
   const std::string origin = UrlUtils::extractHost(browseCurrentUrl);
   const std::string selfPath = pathOf(browseCurrentUrl);
@@ -866,15 +852,15 @@ int PluginCatalogActivity::rowCount() const {
 
 const std::string& PluginCatalogActivity::activeBrowseUrl() const {
   // Search overrides the list view, reusing the browse url when unspecified.
-  if (searchActive) return pick(manifest.searchUrl, manifest.browseUrl);
-  if (currentList < 0 || currentList >= static_cast<int>(manifest.browseLists.size())) return manifest.browseUrl;
-  return pick(manifest.browseLists[currentList].url, manifest.browseUrl);
+  if (searchActive) return pick(manifest.searchUrl, manifest.browseReq.url);
+  if (currentList < 0 || currentList >= static_cast<int>(manifest.browseLists.size())) return manifest.browseReq.url;
+  return pick(manifest.browseLists[currentList].url, manifest.browseReq.url);
 }
 
 const std::string& PluginCatalogActivity::activeBrowseBody() const {
-  if (searchActive) return pick(manifest.searchBody, manifest.browseBody);
-  if (currentList < 0 || currentList >= static_cast<int>(manifest.browseLists.size())) return manifest.browseBody;
-  return pick(manifest.browseLists[currentList].body, manifest.browseBody);
+  if (searchActive) return pick(manifest.searchBody, manifest.browseReq.body);
+  if (currentList < 0 || currentList >= static_cast<int>(manifest.browseLists.size())) return manifest.browseReq.body;
+  return pick(manifest.browseLists[currentList].body, manifest.browseReq.body);
 }
 
 void PluginCatalogActivity::fetchPage(const int newPage) {
@@ -883,26 +869,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
     return;
   }
   page = newPage;
-  loadConfig();
-  if (!loadToken() && !(manifest.hasPasswordGrant() && refreshCredentialToken())) {
-    state = State::NO_TOKEN;
-    requestUpdate();
-    return;
-  }
-
-  const int status = browseRequestToFile(activeBrowseUrl(), activeBrowseBody(), BROWSE_TMP_PATH);
-  if (status == 401 || status == 403) {
-    // Stale or revoked token: back to the sign-in screen, not a raw error.
-    Storage.remove(BROWSE_TMP_PATH);
-    state = State::NO_TOKEN;
-    requestUpdate();
-    return;
-  }
-  if (status < 200 || status >= 300) {
-    Storage.remove(BROWSE_TMP_PATH);
-    fail(StrId::STR_FETCH_FEED_FAILED);
-    return;
-  }
+  if (!fetchBrowseResponse()) return;
 
   JsonDocument filter;
   addFieldFilter(filter, manifest.itemsPath, manifest.titlePath);
@@ -946,7 +913,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   releaseRows();
   items.clear();
   if (!arr.isNull()) {
-    items.reserve(manifest.pageSize);
+    items.reserve(manifest.pageSize + 1);
     for (JsonVariantConst v : arr) {
       if (static_cast<int>(items.size()) >= manifest.pageSize + 1) break;
       Item item;
@@ -1010,10 +977,8 @@ void PluginCatalogActivity::computeInstallStatus() {
 void PluginCatalogActivity::beginAuth() {
   beginLoading();
 
-  const auto headers = substitutedHeaders(manifest.authReq.headers, nullptr);
   std::string response;
-  const int status = apiRequest(substituted(manifest.authReq.url, nullptr), manifest.authReq.method,
-                                substituted(manifest.authReq.body, nullptr), headers, response);
+  const int status = apiRequest(substitutedRequest(manifest.authReq), response);
   JsonDocument doc;
   if (status < 200 || status >= 300 || deserializeJson(doc, response) != DeserializationError::Ok) {
     fail(StrId::STR_PLUGIN_AUTH_FAILED);
@@ -1039,14 +1004,12 @@ void PluginCatalogActivity::beginAuth() {
 void PluginCatalogActivity::pollAuth() {
   authNextPollMs = millis() + authIntervalMs;
 
-  const auto headers = substitutedHeaders(manifest.pollReq.headers, nullptr);
-  std::string url = substituted(manifest.pollReq.url, nullptr);
-  std::string body = substituted(manifest.pollReq.body, nullptr);
-  substituteAll(url, "{device_code}", authDeviceCode);
-  substituteAll(body, "{device_code}", authDeviceCode);
+  auto req = substitutedRequest(manifest.pollReq);
+  substituteAll(req.url, "{device_code}", authDeviceCode);
+  substituteAll(req.body, "{device_code}", authDeviceCode);
 
   std::string response;
-  const int status = apiRequest(url, manifest.pollReq.method, body, headers, response);
+  const int status = apiRequest(req, response);
   if (status < 0) return;  // transient transport failure: keep polling
 
   JsonDocument doc;
@@ -1163,11 +1126,10 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
   }
 
   // Resolve the file URL: either the template itself, or one API hop away.
-  std::string fileUrl = substituted(manifest.dlUrl, &item);
+  std::string fileUrl;
   if (!manifest.dlUrlPath.empty()) {
-    const auto headers = substitutedHeaders(manifest.dlHeaders, &item);
     std::string response;
-    const int status = apiRequest(fileUrl, manifest.dlMethod, substituted(manifest.dlBody, &item), headers, response);
+    const int status = apiRequest(substitutedRequest(manifest.downloadReq, &item), response);
     if (status < 200 || status >= 300) {
       fail(StrId::STR_DOWNLOAD_FAILED);
       return;
@@ -1178,6 +1140,8 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
       return;
     }
     fileUrl = variantToString(resolvePath(doc.as<JsonVariantConst>(), manifest.dlUrlPath));
+  } else {
+    fileUrl = substituted(manifest.downloadReq.url, &item);
   }
   if (fileUrl.empty()) {
     fail(StrId::STR_DOWNLOAD_FAILED);
@@ -1211,7 +1175,7 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
   // url_path already authenticated the JSON hop; the resolved file URL must not
   // inherit those headers (S3 pre-signed GETs reject a second Authorization).
   const std::vector<HttpDownloader::Header> fileHeaders = manifest.dlUrlPath.empty()
-                                                              ? substitutedHeaders(manifest.dlHeaders, &item)
+                                                              ? substitutedHeaders(manifest.downloadReq.headers, &item)
                                                               : std::vector<HttpDownloader::Header>{};
   dlLastRenderedPercent = -1;
   dlLastProgressUpdateMs = 0;
@@ -1589,64 +1553,29 @@ void PluginCatalogActivity::buildBrowsingScreen(UiScreen& screen) {
 void PluginCatalogActivity::rebuildRowItems() {
   rowItems.clear();
   rowItems.reserve(rowCount());
+  const auto addRow = [&](const char* label, const char* subtitle = nullptr, const char* value = nullptr) {
+    fui::ListItem row;
+    row.label = label;
+    row.subtitle = subtitle && subtitle[0] ? subtitle : nullptr;
+    row.value = value && value[0] ? value : nullptr;
+    row.actionValue = static_cast<int16_t>(rowItems.size());
+    rowItems.push_back(row);
+  };
   if (state == State::PLUGIN_PICKER) {
-    if (showOpds) {
-      fui::ListItem opds;
-      opds.label = tr(STR_OPDS_BROWSER);
-      opds.subtitle = tr(STR_OPDS_SERVERS);
-      opds.actionValue = 0;
-      rowItems.push_back(opds);
-    }
+    if (showOpds) addRow(tr(STR_OPDS_BROWSER), tr(STR_OPDS_SERVERS));
     for (const auto& plugin : installedPlugins) {
-      fui::ListItem item;
-      item.label = plugin.title.c_str();
-      // Web-only plugins are listed (so an install is visibly installed) but
-      // inert: the hint replaces the description and there is no chevron.
-      if (plugin.manifestPath.empty()) {
-        item.subtitle = tr(STR_PLUGIN_WEB_ONLY);
-      } else {
-        if (!plugin.description.empty()) item.subtitle = plugin.description.c_str();
-        item.value = ">";
-      }
-      item.actionValue = static_cast<int16_t>(rowItems.size());
-      rowItems.push_back(item);
+      const bool webOnly = plugin.manifestPath.empty();
+      addRow(plugin.title.c_str(), webOnly ? tr(STR_PLUGIN_WEB_ONLY) : plugin.description.c_str(),
+             webOnly ? nullptr : ">");
     }
-    return;
-  }
-  if (state == State::LIST_PICKER) {
-    for (const auto& list : manifest.browseLists) {
-      fui::ListItem item;
-      item.label = list.title.c_str();
-      item.actionValue = static_cast<int16_t>(rowItems.size());
-      rowItems.push_back(item);
+  } else if (state == State::LIST_PICKER) {
+    for (const auto& list : manifest.browseLists) addRow(list.title.c_str());
+  } else {
+    if (prevRowVisible()) addRow(tr(STR_PREV_PAGE), nullptr, ">");
+    for (const auto& entry : items) {
+      addRow(entry.title.c_str(), entry.author.c_str(), entry.isDir ? ">" : entry.status.c_str());
     }
-    return;
-  }
-  if (prevRowVisible()) {
-    fui::ListItem prev;
-    prev.label = tr(STR_PREV_PAGE);
-    prev.value = ">";
-    prev.actionValue = static_cast<int16_t>(rowItems.size());
-    rowItems.push_back(prev);
-  }
-  for (const auto& entry : items) {
-    fui::ListItem item;
-    item.label = entry.title.c_str();
-    if (!entry.author.empty()) item.subtitle = entry.author.c_str();
-    if (entry.isDir) item.value = ">";
-    // Install/update badge (plugin-store style catalogs); folders never carry
-    // one, so it can't collide with the chevron.
-    else if (!entry.status.empty())
-      item.value = entry.status.c_str();
-    item.actionValue = static_cast<int16_t>(rowItems.size());
-    rowItems.push_back(item);
-  }
-  if (nextRowVisible()) {
-    fui::ListItem next;
-    next.label = tr(STR_NEXT_PAGE);
-    next.value = ">";
-    next.actionValue = static_cast<int16_t>(rowItems.size());
-    rowItems.push_back(next);
+    if (nextRowVisible()) addRow(tr(STR_NEXT_PAGE), nullptr, ">");
   }
 }
 
