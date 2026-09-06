@@ -51,6 +51,7 @@ Response:
 | `rssi` | number | Wi-Fi RSSI in dBm; `0` in AP mode |
 | `freeHeap` | number | Free heap in bytes |
 | `uptime` | number | Seconds since boot |
+| `hardwareMac` | string | Factory MAC, stable across Wi-Fi modes; omitted if unavailable |
 | `device` | string | `"X3"` or `"X4"` hardware detection |
 
 ## File Management
