@@ -52,16 +52,18 @@
         this._actionBusy = false;
       }
     },
-    async _post(path, body) {
-      const r = await fetch(path, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-      });
+    async _readResponse(r, path) {
       if (!r.ok) {
         let detail = '';
         try { detail = (await r.json()).error || ''; } catch (e) {}
         throw new Error(path + ' ' + r.status + (detail ? ': ' + detail : ''));
       }
       return r.json();
+    },
+    async _post(path, body) {
+      return this._readResponse(await fetch(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      }), path);
     },
     // Device capabilities a page can't do itself. relay() resolves to
     // { status, body, headers }, where headers is an ordered list of
@@ -71,11 +73,8 @@
     },
     crypto(op, fields) { return this._post('/api/crypto', Object.assign({ op }, fields || {})); },
     async writeFile(plugin, path, dataB64) {
-      // Decode base64 in the browser and POST raw bytes. The device writes the
-      // body verbatim, so it never holds a second decoded copy — decoding on the
-      // device cost ~2.3x the RAM and OOM'd the credential write on low-RAM (C3)
-      // boards mid-activation. The body length carries embedded NULs, so binary
-      // payloads survive intact.
+      // Decode in the browser so the device receives one binary body.
+      // Typed-array uploads preserve embedded NULs.
       const bytes = Uint8Array.from(atob(dataB64 || ''), (c) => c.charCodeAt(0));
       const url = '/api/plugin-fs?plugin=' + encodeURIComponent(plugin) +
         '&path=' + encodeURIComponent(path);
@@ -84,12 +83,7 @@
         headers: { 'Content-Type': 'application/octet-stream' },
         body: bytes
       });
-      if (!r.ok) {
-        let detail = '';
-        try { detail = (await r.json()).error || ''; } catch (e) {}
-        throw new Error('/api/plugin-fs ' + r.status + (detail ? ': ' + detail : ''));
-      }
-      return r.json();
+      return this._readResponse(r, '/api/plugin-fs');
     },
     async fetchToSd(plugin, url, dest, headers) {
       // Keep each browser-facing request short. Mobile browsers may terminate

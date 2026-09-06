@@ -192,32 +192,31 @@ bool hasAllowedExtension(const std::string& path, const std::vector<std::string>
                      [&](const std::string& ext) { return FsHelpers::checkFileExtension(trimmed, ext.c_str()); });
 }
 
-// Extracts one row per repeating item element from an XML list via expat (the
-// parser the OPDS browser already uses), instead of scanning tags by hand.
-// Elements match on local name (namespace prefix stripped). Selector forms:
-// "elem" (leading text of the first matching descendant), "elem@attr"
-// (attribute of the first matching descendant), "@attr" (attribute on the
-// item element itself).
+// Streams rows matched by local element name. Selectors: "elem" (leading
+// descendant text), "elem@attr" (descendant attribute), "@attr" (item attribute).
 class XmlListParser {
  public:
+  static constexpr size_t MAX_ITEMS = 200;
   enum Field { F_URL, F_TITLE, F_AUTHOR, F_ID, F_COUNT };
   struct RawItem {
     std::string field[F_COUNT];
     bool isDir = false;
   };
 
-  XmlListParser(const std::string& itemName, const std::string& containerName, const std::string (&selectors)[F_COUNT])
-      : item(itemName), container(containerName) {
-    for (int i = 0; i < F_COUNT; i++) splitSelector(selectors[i], sel[i]);
+  using ItemSink = void (*)(void*, RawItem&);
+  XmlListParser(const std::string& itemName, const std::string& containerName,
+                const std::string* const (&selectors)[F_COUNT], ItemSink sink, void* context)
+      : item(itemName), container(containerName), sink(sink), context(context) {
+    for (int i = 0; i < F_COUNT; i++) splitSelector(*selectors[i], sel[i]);
   }
 
-  // Parses the whole document from an SD file in small chunks, so the raw XML
-  // (a large WebDAV multistatus, ...) never occupies DRAM. Rows collected
-  // before a parse error are kept, mirroring the previous scanner, which
-  // stopped at the first bad tag.
-  std::vector<RawItem> parseFile(HalFile& f) {
+  // Emit completed rows immediately; a parse error keeps earlier rows.
+  void parseFile(HalFile& f) {
     XML_Parser p = XML_ParserCreate(nullptr);
-    if (!p) return std::move(rows);
+    if (!p) {
+      LOG_ERR("PCAT", "OOM: XML list parser");
+      return;
+    }
     XML_SetUserData(p, this);
     XML_SetElementHandler(
         p,
@@ -227,11 +226,10 @@ class XmlListParser {
         [](void* self, const XML_Char* name) { static_cast<XmlListParser*>(self)->onEnd(name); });
     XML_SetCharacterDataHandler(
         p, [](void* self, const XML_Char* s, int len) { static_cast<XmlListParser*>(self)->onText(s, len); });
-    std::vector<char> buf(2048);
     for (;;) {
-      const int n = f.read(buf.data(), buf.size());
+      const int n = f.read(buf, sizeof(buf));
       const bool last = n <= 0;
-      if (XML_Parse(p, buf.data(), last ? 0 : n, last ? XML_TRUE : XML_FALSE) != XML_STATUS_OK) {
+      if (XML_Parse(p, buf, last ? 0 : n, last ? XML_TRUE : XML_FALSE) != XML_STATUS_OK) {
         LOG_ERR("PCAT", "XML parse error at line %lu: %s", XML_GetCurrentLineNumber(p),
                 XML_ErrorString(XML_GetErrorCode(p)));
         break;
@@ -239,11 +237,9 @@ class XmlListParser {
       if (last) break;
     }
     destroyXmlParser(p);
-    return std::move(rows);
   }
 
  private:
-  static constexpr size_t MAX_ITEMS = 200;
   static constexpr size_t MAX_FIELD_CHARS = 768;
 
   struct Selector {
@@ -280,7 +276,7 @@ class XmlListParser {
     depth++;
     const char* local = localName(name);
     if (itemDepth < 0) {
-      if (rows.size() < MAX_ITEMS && item == local) {
+      if (parsedItems < MAX_ITEMS && item == local) {
         itemDepth = depth;
         current = RawItem{};
         capturingMask = 0;
@@ -315,7 +311,8 @@ class XmlListParser {
       capturingMask = 0;
       if (depth == itemDepth && item == localName(name)) {
         for (auto& f : current.field) trim(f);
-        rows.push_back(std::move(current));
+        ++parsedItems;
+        sink(context, current);
         itemDepth = -1;
       }
     }
@@ -343,7 +340,10 @@ class XmlListParser {
   std::string item;
   std::string container;
   Selector sel[F_COUNT];
-  std::vector<RawItem> rows;
+  char buf[2048] = {};  // The parser and its read buffer share one heap allocation.
+  ItemSink sink;
+  void* context;
+  size_t parsedItems = 0;
   RawItem current;
   bool done[F_COUNT] = {};
   uint8_t capturingMask = 0;
@@ -793,37 +793,41 @@ void PluginCatalogActivity::fetchXmlList() {
   };
   const std::string decodedSelf = trimSlash(urlDecode(selfPath));
 
-  // Extract one row per repeating item element, then apply the list rules.
-  const std::string selectors[XmlListParser::F_COUNT] = {manifest.urlPath, manifest.titlePath, manifest.authorPath,
-                                                         manifest.idPath};
-  XmlListParser parser(manifest.xmlItem, manifest.xmlContainer, selectors);
-  std::vector<XmlListParser::RawItem> rows;
-  {
-    HalFile file;
-    if (Storage.openFileForRead("PCAT", BROWSE_TMP_PATH, file)) rows = parser.parseFile(file);
-    // file closed at scope exit, before the remove below
-  }
-  Storage.remove(BROWSE_TMP_PATH);
-
   releaseRows();
   items.clear();
-  items.reserve(rows.size());
-  for (const auto& row : rows) {
-    const std::string& rawUrl = row.field[XmlListParser::F_URL];
-    if (rawUrl.empty()) continue;
+  auto append = [&](XmlListParser::RawItem& row) {
+    std::string& rawUrl = row.field[XmlListParser::F_URL];
+    if (rawUrl.empty()) return;
+    const std::string decodedUrl = urlDecode(rawUrl);
+    if (manifest.xmlSkipSelf && trimSlash(decodedUrl) == decodedSelf) return;
+    if (!row.isDir && !hasAllowedExtension(decodedUrl, manifest.xmlExtensions)) return;
     Item item;
     item.isDir = row.isDir;
-    item.url =
-        manifest.xmlResolveUrls && rawUrl.rfind("http", 0) != 0 ? origin + urlEncodePath(urlDecode(rawUrl)) : rawUrl;
-    item.author = row.field[XmlListParser::F_AUTHOR];
-    item.id = row.field[XmlListParser::F_ID];
-    const std::string& title = row.field[XmlListParser::F_TITLE];
-    item.title = title.empty() ? basename(urlDecode(rawUrl)) : title;
-
-    if (manifest.xmlSkipSelf && trimSlash(urlDecode(rawUrl)) == decodedSelf) continue;
-    if (!item.isDir && !hasAllowedExtension(urlDecode(rawUrl), manifest.xmlExtensions)) continue;
+    item.url = manifest.xmlResolveUrls && rawUrl.rfind("http", 0) != 0 ? origin + urlEncodePath(decodedUrl)
+                                                                       : std::move(rawUrl);
+    item.author = std::move(row.field[XmlListParser::F_AUTHOR]);
+    item.id = std::move(row.field[XmlListParser::F_ID]);
+    std::string& title = row.field[XmlListParser::F_TITLE];
+    item.title = title.empty() ? basename(decodedUrl) : std::move(title);
+    if (items.size() == items.capacity()) {
+      items.reserve(std::min(XmlListParser::MAX_ITEMS, std::max<size_t>(manifest.pageSize, items.capacity() * 2)));
+    }
     items.push_back(std::move(item));
+  };
+  const std::string* const selectors[] = {&manifest.urlPath, &manifest.titlePath, &manifest.authorPath,
+                                          &manifest.idPath};
+  {
+    auto parser = makeUniqueNoThrow<XmlListParser>(
+        manifest.xmlItem, manifest.xmlContainer, selectors,
+        [](void* context, XmlListParser::RawItem& row) { (*static_cast<decltype(append)*>(context))(row); }, &append);
+    HalFile file;
+    if (!parser) {
+      LOG_ERR("PCAT", "OOM: XML list reader");
+    } else if (Storage.openFileForRead("PCAT", BROWSE_TMP_PATH, file)) {
+      parser->parseFile(file);
+    }
   }
+  Storage.remove(BROWSE_TMP_PATH);
 
   // Folders first, then files, each alphabetical — matches how file managers list.
   std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
