@@ -3,7 +3,6 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
-#include "MappedInputManager.h"
 #include "UIScale.h"
 #include "UITheme.h"
 
@@ -103,19 +102,4 @@ void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* status, cons
     screen.button(cancel,
                   fui::Rect{static_cast<int16_t>(btnArea.x + (btnArea.width - btnW) / 2), btnArea.y, btnW, btnH});
   }
-}
-
-void catalogListBody(UiAppHost::UiScreen& screen, const MappedInputManager& input, fui::ListNav& nav,
-                     fui::ListProps& props, const int count, const bool hasSubtitle) {
-  int16_t rowHeight = screen.theme().rowHeight;
-  if (!input.hasTouch()) {
-    // Non-touch hardware (X3/X4) keeps the original, denser per-theme row
-    // height instead of FreeInkUI's touch-target-sized default (see
-    // UiListActivity::syncListViewport; these screens sync their own viewport).
-    const auto& metrics = UITheme::getInstance().getMetrics();
-    rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
-    props.rowHeight = rowHeight;
-  }
-  nav.syncToProps(screen.body(), rowHeight, screen.theme().listRowGap, count, props);
-  screen.list(props);
 }

@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include "activities/UiListActivity.h"
+#include "activities/CatalogActivity.h"
 #include "network/HttpDownloader.h"
 #include "util/PluginHttp.h"
 
@@ -31,22 +31,8 @@ bool anyPluginInstalled();
 
 // Manifest-driven picker, catalog, download, and sign-in screens.
 // See docs/sd-plugins.md for the device.json schema.
-class PluginCatalogActivity final : public UiListActivity {
+class PluginCatalogActivity final : public CatalogActivity {
  public:
-  enum class State {
-    PLUGIN_PICKER,
-    CHECK_WIFI,
-    WIFI_SELECTION,
-    LIST_PICKER,
-    LOADING,
-    BROWSING,
-    DOWNLOADING,
-    DONE,
-    ERROR,
-    NO_TOKEN,
-    AUTH
-  };
-
   // showOpds adds the OPDS row; rootMode returns Home instead of popping to Settings.
   // Out-of-line construction/destruction needs the complete SecureHttpClient type.
   explicit PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool showOpds = false,
@@ -124,7 +110,6 @@ class PluginCatalogActivity final : public UiListActivity {
   std::string manifestPath;  // empty while the picker is showing
   std::string catalogTitle;
   Manifest manifest;
-  State state = State::PLUGIN_PICKER;
   std::vector<PluginRef> installedPlugins;
   bool showOpds = false;
   bool rootMode = false;
@@ -146,16 +131,6 @@ class PluginCatalogActivity final : public UiListActivity {
   // XML-list folder navigation: current container URL and the trail back out.
   std::string browseCurrentUrl;
   std::vector<std::string> browseHistory;
-  std::string errorMessage;
-  std::string statusMessage;
-  size_t downloadProgress = 0;
-  bool cancelDownload = false;
-  // Repaint throttle state for onDownloadProgress (reset before each download).
-  int dlLastRenderedPercent = -1;
-  unsigned long dlLastProgressUpdateMs = 0;
-  // Set when the download callback consumes the home gesture; once the
-  // transfer abort unwinds, leave the catalog instead of returning to it.
-  bool goHomeAfterCancel = false;
   // Device-code sign-in state
   std::string authUserCode, authVerifyUrl, authDeviceCode;
   unsigned long authIntervalMs = 5000;
@@ -172,21 +147,12 @@ class PluginCatalogActivity final : public UiListActivity {
   bool loadToken();
   void loadConfig();
   bool saveToken(const std::string& value);
-  // Enters State::ERROR with a translated message and requests a redraw.
-  void fail(StrId msg);
-  // Paint Loading before starting a blocking fetch.
-  void beginLoading();
-  void checkAndConnectWifi();
-  void launchWifiSelection();
   // Show named lists when present, otherwise fetch the first page.
-  void startBrowse();
-  static void onSearchEvent(const freeink::ui::ActionEvent& event, void* user);
-  static void onCancelEvent(const freeink::ui::ActionEvent& event, void* user);
-  void launchSearch();
-  void performSearch(const std::string& query);
-  void pumpDownloadInput();
-  void onDownloadProgress(size_t downloaded, size_t total);
-  void finishCancelledDownload();
+  void startBrowse() override;
+  void retryBrowse() override;
+  bool hasSearch() const override { return manifest.hasSearch(); }
+  void performSearch(const std::string& query) override;
+  void downloadFinished(bool cancelled) override;
   // Header label for the browsing screen (list title / search / page suffix).
   std::string browsingHeaderLabel() const;
   // JSON pagination adds rows before/after the current items.
@@ -220,9 +186,6 @@ class PluginCatalogActivity final : public UiListActivity {
   void downloadItem(const Item& item);
   HttpDownloader::DownloadError downloadBundle(const Item& item);
   HttpDownloader::DownloadError downloadBook(const Item& item);
-  HttpDownloader::DownloadError downloadFile(const std::string& url, const std::string& dest,
-                                             const std::string& user = {}, const std::string& password = {},
-                                             const pluginhttp::Headers& headers = {});
   void beginAuth();
   void pollAuth();
   bool refreshCredentialToken();  // password grant: mint a token from config creds
@@ -232,5 +195,4 @@ class PluginCatalogActivity final : public UiListActivity {
   int apiRequest(const pluginhttp::RequestSpec& req, String& out);
   pluginhttp::RequestSpec substitutedRequest(const pluginhttp::RequestSpec& req, const Item* item = nullptr) const;
   std::string substituted(std::string tpl, const Item* item) const;
-  bool preventAutoSleep() override { return true; }
 };

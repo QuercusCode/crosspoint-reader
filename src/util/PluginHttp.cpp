@@ -100,7 +100,7 @@ std::string urlEncodeQuery(const std::string& s) {
   std::string out;
   out.reserve(s.size() * 3);
   for (const unsigned char c : s) {
-    if (isalnum(c) || strchr("-_.~", c)) {
+    if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
       out += static_cast<char>(c);
     } else {
       char buf[4];

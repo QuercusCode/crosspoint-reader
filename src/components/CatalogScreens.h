@@ -4,13 +4,12 @@
 #include "UiAppHost.h"
 
 class GfxRenderer;
-class MappedInputManager;
 
 // Shared FreeInkUI screen builders for the network catalog activities (the
 // OPDS book browser and the SD-plugin catalogs). Both are UiAppHost state
 // machines whose states share the same themed chrome: a header band over the
 // button hints, centered status/message blocks, a download-progress screen,
-// and a ListNav-synced list body.
+// and centered status messages.
 
 // Reserve the firmware's button-hint band, align with GUI.drawHeader's top
 // offset, and draw a fui header. A trailing icon (e.g. search) becomes a
@@ -34,9 +33,3 @@ void catalogCenteredBlock(UiAppHost::UiScreen& screen, std::initializer_list<Cat
 // the total is known (total > 0), otherwise a running byte count.
 void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* status, size_t progress, size_t total,
                            freeink::ui::ActionId cancelAction = freeink::ui::NO_ACTION);
-
-// List body with the shared viewport protocol: on non-touch hardware keep the
-// denser per-theme row height (see UiListActivity::syncListViewport), sync
-// `nav` to the screen band, and emit the list.
-void catalogListBody(UiAppHost::UiScreen& screen, const MappedInputManager& input, freeink::ui::ListNav& nav,
-                     freeink::ui::ListProps& props, int count, bool hasSubtitle);

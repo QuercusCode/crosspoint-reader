@@ -20,12 +20,8 @@
 #include <new>
 
 #include "MappedInputManager.h"
-#include "SilentRestart.h"
-#include "activities/network/WifiSelectionActivity.h"
-#include "activities/util/KeyboardEntryActivity.h"
 #include "components/CatalogScreens.h"
 #include "components/UITheme.h"
-#include "components/icons/search32.h"
 #include "network/HttpDownloader.h"
 #include "util/BookCacheUtils.h"
 #include "util/PluginEvents.h"
@@ -45,11 +41,6 @@ using pluginhttp::substituteAll;
 using pluginhttp::urlEncodeQuery;
 using pluginhttp::variantToString;
 
-// Header search action, tapped on the browsing screen's search icon. The base
-// reserves ACTION_ROW (1); subclass action ids start at ACTION_USER (2).
-constexpr fui::ActionId ACTION_SEARCH = 2;
-constexpr fui::ActionId ACTION_CANCEL = 3;
-
 namespace {
 constexpr size_t MAX_MANIFEST_SIZE = 8 * 1024;
 // In-DRAM responses (auth, download-url hops) are small; the cap bounds a
@@ -61,8 +52,6 @@ constexpr size_t MAX_API_RESPONSE = 48 * 1024;
 constexpr char BROWSE_TMP_PATH[] = "/.pcat_tmp.json";
 constexpr size_t MAX_BROWSE_RESPONSE = 1024 * 1024;
 constexpr int MAX_PAGE_SIZE = 16;
-constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
-constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
 
 // Builds an ArduinoJson deserialization filter keeping only one dotted path.
 // A numeric segment becomes filter index [0], which ArduinoJson applies to
@@ -478,18 +467,6 @@ bool PluginCatalogActivity::loadToken() {
 
 void PluginCatalogActivity::loadConfig() { pluginhttp::loadConfigFile(manifest.configFile, config); }
 
-void PluginCatalogActivity::fail(const StrId msg) {
-  state = State::ERROR;
-  errorMessage = I18N.get(msg);
-  requestUpdate();
-}
-
-void PluginCatalogActivity::beginLoading() {
-  state = State::LOADING;
-  statusMessage = tr(STR_LOADING);
-  requestUpdate(true);
-}
-
 pluginhttp::Headers PluginCatalogActivity::substitutedHeaders(const pluginhttp::Headers& headers,
                                                               const Item* item) const {
   pluginhttp::Headers out;
@@ -524,7 +501,7 @@ std::string PluginCatalogActivity::substituted(std::string tpl, const Item* item
 
 PluginCatalogActivity::PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                              const bool showOpds, const bool rootMode)
-    : UiListActivity("PluginCatalog", renderer, mappedInput), showOpds(showOpds), rootMode(rootMode) {}
+    : CatalogActivity("PluginCatalog", renderer, mappedInput), showOpds(showOpds), rootMode(rootMode) {}
 
 PluginCatalogActivity::~PluginCatalogActivity() = default;
 
@@ -533,9 +510,7 @@ int PluginCatalogActivity::apiRequest(const pluginhttp::RequestSpec& req, String
 }
 
 void PluginCatalogActivity::onEnter() {
-  UiListActivity::onEnter();
-  app.on(ACTION_SEARCH, &PluginCatalogActivity::onSearchEvent, this);
-  app.on(ACTION_CANCEL, &PluginCatalogActivity::onCancelEvent, this);
+  CatalogActivity::onEnter();
   enterPluginPicker();
 }
 
@@ -597,23 +572,10 @@ void PluginCatalogActivity::enterCatalog() {
 void PluginCatalogActivity::exitCatalog() { enterPluginPicker(); }
 
 void PluginCatalogActivity::onExit() {
-  Activity::onExit();
   items.clear();
-  session.reset();  // drop the reused TLS session before Wi-Fi teardown
+  session.reset();  // drop browse TLS before Wi-Fi teardown
   Storage.remove(BROWSE_TMP_PATH);
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
-    silentRestart();
-  }
-}
-
-void PluginCatalogActivity::checkAndConnectWifi() {
-  if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-    startBrowse();
-    return;
-  }
-  launchWifiSelection();
+  CatalogActivity::onExit();
 }
 
 void PluginCatalogActivity::startBrowse() {
@@ -645,65 +607,9 @@ void PluginCatalogActivity::startBrowse() {
   fetchPage(1);
 }
 
-void PluginCatalogActivity::onSearchEvent(const fui::ActionEvent&, void* user) {
-  auto* self = static_cast<PluginCatalogActivity*>(user);
-  if (self->state == State::BROWSING && self->manifest.hasSearch()) self->launchSearch();
-}
-
-void PluginCatalogActivity::onCancelEvent(const fui::ActionEvent&, void* user) {
-  auto* self = static_cast<PluginCatalogActivity*>(user);
-  if (self->state != State::DOWNLOADING) return;
-  self->app.clearTapFlash();
-  self->cancelDownload = true;
-}
-
-void PluginCatalogActivity::pumpDownloadInput() {
-  mappedInput.update();
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) cancelDownload = true;
-  if (mappedInput.wasHomeGesture()) {
-    cancelDownload = true;
-    goHomeAfterCancel = true;
-  }
-  routeTouch(mappedInput);
-}
-
 // Shared progress callback for single-file and bundle downloads: updates the
 // byte counter, pumps input for cancel, and throttles repaints to visible
 // percent steps.
-void PluginCatalogActivity::onDownloadProgress(const size_t downloaded, const size_t total) {
-  downloadProgress = downloaded;
-  pumpDownloadInput();
-  const int percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(downloaded) * 100 / total) : 0;
-  const unsigned long now = millis();
-  if (percent >= 100 || dlLastRenderedPercent < 0 ||
-      percent >= dlLastRenderedPercent + DOWNLOAD_PROGRESS_STEP_PERCENT ||
-      now - dlLastProgressUpdateMs >= DOWNLOAD_PROGRESS_MIN_UPDATE_MS) {
-    dlLastRenderedPercent = percent;
-    dlLastProgressUpdateMs = now;
-    requestUpdate(true);
-  }
-}
-
-void PluginCatalogActivity::finishCancelledDownload() {
-  LOG_INF("PCAT", "Download cancelled");
-  if (goHomeAfterCancel) {
-    onGoHome();
-    return;
-  }
-  state = State::BROWSING;
-  requestUpdate();
-}
-
-void PluginCatalogActivity::launchSearch() {
-  auto keyboard = std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH));
-  startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
-    if (!result.isCancelled) {
-      performSearch(std::get<KeyboardResult>(result.data).text);
-    } else {
-      requestUpdate();
-    }
-  });
-}
 
 void PluginCatalogActivity::performSearch(const std::string& query) {
   if (query.empty()) {
@@ -717,19 +623,6 @@ void PluginCatalogActivity::performSearch(const std::string& query) {
   nav.reset();
   beginLoading();
   fetchPage(1);
-}
-
-void PluginCatalogActivity::launchWifiSelection() {
-  state = State::WIFI_SELECTION;
-  requestUpdate();
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
-                         [this](const ActivityResult& result) {
-                           if (!result.isCancelled) {
-                             startBrowse();
-                           } else {
-                             fail(StrId::STR_WIFI_CONN_FAILED);
-                           }
-                         });
 }
 
 bool PluginCatalogActivity::refreshCredentialToken() {
@@ -1043,34 +936,13 @@ void PluginCatalogActivity::pollAuth() {
 }
 
 void PluginCatalogActivity::downloadItem(const Item& item) {
-  state = State::DOWNLOADING;
-  statusMessage = item.title;
-  downloadProgress = 0;
-  cancelDownload = false;
-  goHomeAfterCancel = false;
-  requestUpdate(true);
-
-  const auto result = manifest.isBundle() && !item.files.empty() ? downloadBundle(item) : downloadBook(item);
-  if (result == HttpDownloader::ABORTED) {
-    finishCancelledDownload();
-  } else if (result != HttpDownloader::OK) {
-    LOG_ERR("PCAT", "Download failed: %d", static_cast<int>(result));
-    fail(StrId::STR_DOWNLOAD_FAILED);
-  } else {
-    state = State::DONE;
-    requestUpdate();
-  }
+  beginDownload(item.title);
+  finishDownload(manifest.isBundle() && !item.files.empty() ? downloadBundle(item) : downloadBook(item));
 }
 
-HttpDownloader::DownloadError PluginCatalogActivity::downloadFile(const std::string& url, const std::string& dest,
-                                                                  const std::string& user, const std::string& password,
-                                                                  const pluginhttp::Headers& headers) {
-  downloadProgress = 0;
-  dlLastRenderedPercent = -1;
-  dlLastProgressUpdateMs = 0;
-  return HttpDownloader::downloadToFile(
-      url, dest, [this](const size_t downloaded, const size_t total) { onDownloadProgress(downloaded, total); },
-      &cancelDownload, user, password, headers);
+void PluginCatalogActivity::downloadFinished(const bool cancelled) {
+  state = cancelled ? State::BROWSING : State::DONE;
+  requestUpdate();
 }
 
 HttpDownloader::DownloadError PluginCatalogActivity::downloadBundle(const Item& item) {
@@ -1221,12 +1093,8 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
   return HttpDownloader::OK;
 }
 
-// Every state except BROWSING/LIST_PICKER consumes the pass here; the base
-// list protocol (Back/Confirm, touch routing, swipe scroll, button
-// navigation) only ever runs for the two list states.
+// Sign-in and completion states precede the shared catalog input handling.
 bool PluginCatalogActivity::handleCustomInput() {
-  if (state == State::WIFI_SELECTION || state == State::DOWNLOADING) return true;
-
   if (state == State::AUTH) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       state = State::NO_TOKEN;
@@ -1237,28 +1105,17 @@ bool PluginCatalogActivity::handleCustomInput() {
     return true;
   }
 
-  if (state == State::ERROR || state == State::NO_TOKEN) {
+  if (state == State::NO_TOKEN) {
     int tx = 0;
     int ty = 0;
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || mappedInput.wasScreenTapped(tx, ty)) {
-      if (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
+      if (!wifiConnected())
         launchWifiSelection();
-      } else if (state == State::NO_TOKEN && manifest.hasDeviceCode()) {
-        beginAuth();
-      } else if (!manifest.browseLists.empty() && !manifest.isXmlList() && currentList < 0) {
-        startBrowse();  // nothing picked yet: retry lands on the list picker
-      } else {
-        beginLoading();
-        fetchPage(page);
-      }
+      else
+        retryBrowse();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       exitCatalog();
     }
-    return true;
-  }
-
-  if (state == State::CHECK_WIFI || state == State::LOADING) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) exitCatalog();
     return true;
   }
 
@@ -1277,22 +1134,28 @@ bool PluginCatalogActivity::handleCustomInput() {
     return true;
   }
 
-  // The header search icon is reachable by buttons too: on the top row, where
-  // previous-nav is a no-op, an Up press (NavPrevious) launches the query. It
-  // is never a list row. Touch taps the icon, routed as ACTION_SEARCH.
-  if (state == State::BROWSING && manifest.hasSearch() && nav.selected == 0 &&
-      mappedInput.wasReleased(MappedInputManager::Button::NavPrevious)) {
-    launchSearch();
-    return true;
-  }
+  return CatalogActivity::handleCustomInput();
+}
 
-  return false;
+void PluginCatalogActivity::retryBrowse() {
+  if (state == State::NO_TOKEN && manifest.hasDeviceCode()) {
+    beginAuth();
+  } else if (!manifest.browseLists.empty() && !manifest.isXmlList() && currentList < 0) {
+    startBrowse();
+  } else {
+    beginLoading();
+    fetchPage(page);
+  }
 }
 
 // Back on the picker leaves the activity; the base routes it here via
 // handleButtons. The catalog states route their Back through exitCatalog()
 // instead, landing back on the picker.
 void PluginCatalogActivity::onBackButton() {
+  if (state == State::ERROR || state == State::CHECK_WIFI || state == State::LOADING) {
+    exitCatalog();
+    return;
+  }
   if (state == State::PLUGIN_PICKER) {
     if (rootMode) {
       onGoHome();  // home launch replaced the home screen (root)
@@ -1422,16 +1285,10 @@ void PluginCatalogActivity::drawFooter() {
 }
 
 void PluginCatalogActivity::buildScreen(UiScreen& screen) {
-  // One header renderer for every state (catalogScreenHeader), so the header
-  // never changes size or shifts as the plugin moves between states. The search
-  // icon rides along only while browsing a searchable catalog; the picker and
-  // the status screens show the plain plugin title.
   const bool listState = state == State::BROWSING || state == State::LIST_PICKER;
   const std::string title = listState ? browsingHeaderLabel() : catalogTitle;
-  const bool withSearch = state == State::BROWSING && manifest.hasSearch();
-  catalogScreenHeader(screen, renderer, title.c_str(),
-                      withSearch ? fui::bitmapFromIcon(icon_search_32) : fui::BitmapRef{},
-                      withSearch ? ACTION_SEARCH : fui::NO_ACTION);
+  screenHeader(screen, title.c_str());
+  if (buildStatusScreen(screen)) return;
 
   switch (state) {
     case State::BROWSING:
@@ -1442,25 +1299,14 @@ void PluginCatalogActivity::buildScreen(UiScreen& screen) {
     case State::AUTH:
       buildAuthScreen(screen);
       return;
-    case State::DOWNLOADING:
-      catalogDownloadScreen(screen, statusMessage.c_str(), downloadProgress, 0, ACTION_CANCEL);
-      return;
     case State::DONE:
       catalogCenteredBlock(screen, {{tr(STR_DOWNLOAD_COMPLETE), true}, {statusMessage.c_str()}});
-      return;
-    case State::ERROR:
-      if (mappedInput.hasTouch()) {
-        catalogCenteredBlock(screen, {{tr(STR_ERROR_MSG), true}, {errorMessage.c_str()}, {tr(STR_TAP_TO_RETRY)}});
-      } else {
-        catalogCenteredBlock(screen, {{tr(STR_ERROR_MSG), true}, {errorMessage.c_str()}});
-      }
       return;
     case State::NO_TOKEN:
       catalogCenteredBlock(screen,
                            {{manifest.hasDeviceCode() ? tr(STR_PLUGIN_SIGN_IN_HINT) : tr(STR_PLUGIN_NOT_SIGNED_IN)}});
       return;
-    default:  // CHECK_WIFI / LOADING (and the brief child-activity handoffs)
-      screen.centeredText(statusMessage.c_str(), screen.theme().bodyText);
+    default:
       return;
   }
 }
