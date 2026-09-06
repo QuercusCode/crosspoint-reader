@@ -889,6 +889,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   // occupies DRAM, only the few fields the filter admits.
   JsonDocument doc;
   {
+    ScopedCleanup cleanup{[] { Storage.remove(BROWSE_TMP_PATH); }};
     HalFile file;
     if (!Storage.openFileForRead("PCAT", BROWSE_TMP_PATH, file)) {
       fail(StrId::STR_PARSE_FEED_FAILED);
@@ -903,15 +904,12 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
       }
     } reader{file};
     const auto parseErr = deserializeJson(doc, reader, DeserializationOption::Filter(filter));
-    // file closed at scope exit, before the remove below
     if (parseErr != DeserializationError::Ok) {
       LOG_ERR("PCAT", "browse JSON parse error: %s", parseErr.c_str());
-      Storage.remove(BROWSE_TMP_PATH);
       fail(StrId::STR_PARSE_FEED_FAILED);
       return;
     }
   }
-  Storage.remove(BROWSE_TMP_PATH);
 
   JsonVariantConst itemsNode = resolvePath(doc.as<JsonVariantConst>(), manifest.itemsPath);
   JsonArrayConst arr = itemsNode.as<JsonArrayConst>();

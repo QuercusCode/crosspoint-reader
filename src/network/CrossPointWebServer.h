@@ -146,16 +146,9 @@ class CrossPointWebServer {
   void handlePostWifiNetwork();
   void handleDeleteWifiNetwork();
 
-  // Browser-side plugins: JS bundles on the SD card (/.crosspoint/plugins/<name>/)
-  // that the web UI discovers, loads, and runs. A manifest's "mount" places a
-  // plugin on the Settings or File Manager page, so plugins can extend either —
-  // e.g. a File Manager plugin that sorts EPUBs into per-author folders, or a
-  // Settings plugin that needs device capabilities a static page can't have
-  // (an outbound HTTPS relay, since the browser can't call other origins; SD
-  // read/write; crypto primitives).
-  // Reads the POST body as JSON into `out`, sending the matching 400 itself
-  // on a missing/malformed body. Returns false when it already responded.
+  // Missing or malformed JSON sends a 400 response and returns false.
   bool readJsonBody(JsonDocument& out) const;
+  void sendJson(const JsonDocument& doc) const;
   void handlePluginList() const;  // GET  /api/plugins   -> discovered plugins
   void handlePluginFile() const;  // GET  /plugin?name&file -> serve SD file
   void handleRelay();             // POST /api/relay     -> device makes an HTTP(S) call
@@ -175,8 +168,8 @@ class CrossPointWebServer {
     uint8_t state = 0;
     char plugin[24] = {0};
     char action[24] = {0};
-    char args[192] = {0};    // JSON object, stored verbatim
-    char result[192] = {0};  // JSON object from the executor
+    char args[192] = {0};    // Serialized JSON value
+    char result[192] = {0};  // Serialized JSON value from the executor
   };
   static constexpr uint8_t JOB_EMPTY = 0;
   static constexpr uint8_t JOB_PENDING = 1;

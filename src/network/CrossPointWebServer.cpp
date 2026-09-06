@@ -1711,6 +1711,17 @@ bool CrossPointWebServer::readJsonBody(JsonDocument& out) const {
   return true;
 }
 
+void CrossPointWebServer::sendJson(const JsonDocument& doc) const {
+  String out;
+  if (!out.reserve(measureJson(doc))) {
+    LOG_ERR("WEB", "OOM: JSON response");
+    server->send(503, "application/json", "{\"error\":\"out of memory\"}");
+    return;
+  }
+  serializeJson(doc, out);
+  server->send(200, "application/json", out);
+}
+
 // GET /api/plugins -> [{ "name", "title", "mount" }, ...]. Only plugins with a
 // plugin.js are listed (the page loads it); optional manifest.json supplies the
 // title and mount point.
@@ -1734,9 +1745,7 @@ void CrossPointWebServer::handlePluginList() const {
     }
   }
 
-  String out;
-  serializeJson(doc, out);
-  server->send(200, "application/json", out);
+  sendJson(doc);
 }
 
 // GET /plugin?name=<plugin>&file=<file> -> serve /.crosspoint/plugins/<plugin>/<file>
@@ -2090,9 +2099,7 @@ void CrossPointWebServer::handleCrypto() {
     resp["error"] = "unknown op";
   }
 
-  String out;
-  serializeJson(resp, out);
-  server->send(200, "application/json", out);
+  sendJson(resp);
 }
 
 // POST /api/fetch {plugin, url, dest, headers?, offset?, maxBytes?}
@@ -2368,21 +2375,12 @@ void CrossPointWebServer::handlePluginFs() {
     return;
   }
 
-  // PluginHost posts the file as a raw octet-stream body (base64 is decoded in
-  // the browser), so the device writes it verbatim — no on-device base64 decode
-  // buffer. Decoding here instead cost ~2.3x the peak RAM (the base64 body String
-  // plus the decoded copy) and OOM'd the credential write on low-RAM (C3) boards
-  // after the activation TLS relays. rawData.length() carries embedded NULs, so
-  // binary payloads survive intact.
+  // Raw bytes from PluginHost; the explicit length preserves embedded NULs.
   const String& rawData = server->arg("plain");
   const auto* data = reinterpret_cast<const uint8_t*>(rawData.c_str());
   const size_t dataSize = rawData.length();
 
-  // A plugin file (config, token, rights, credential) is never legitimately
-  // empty. An empty body means it was dropped in transit — e.g. the WebServer
-  // could not buffer the request on a fragmented heap. Reject BEFORE opening the
-  // file, so a failed write never truncates a good existing credential to 0
-  // bytes (the exact "0-byte content.key" failure this guards against).
+  // Reject empty bodies before opening, so existing credentials are not truncated.
   if (dataSize == 0) {
     server->send(400, "application/json", "{\"error\":\"empty body\"}");
     return;
@@ -2411,9 +2409,7 @@ void CrossPointWebServer::handlePluginFs() {
   JsonDocument resp;
   resp["ok"] = (n == dataSize);
   resp["bytes"] = n;
-  String out;
-  serializeJson(resp, out);
-  server->send(200, "application/json", out);
+  sendJson(resp);
 }
 
 void CrossPointWebServer::handlePluginRunnerPage() const {
@@ -2437,10 +2433,7 @@ void CrossPointWebServer::handlePluginJobSubmit() {
   if (!readJsonBody(req)) return;
   const String plugin = req["plugin"] | "";
   const String action = req["action"] | "";
-  std::string args;
-  if (!req["args"].isNull()) serializeJson(req["args"], args);
-  // The claim response embeds `action` in a snprintf-built JSON template, so
-  // it must be identifier-safe; anything needing escaping is rejected here.
+  // The claim response embeds action without JSON escaping.
   const auto identifierSafe = [](const String& s) {
     for (const char c : s) {
       if (!isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-' && c != '.') return false;
@@ -2448,7 +2441,8 @@ void CrossPointWebServer::handlePluginJobSubmit() {
     return !s.isEmpty();
   };
   if (!safeComponent(plugin) || !identifierSafe(action) || plugin.length() >= sizeof(PluginJob::plugin) ||
-      action.length() >= sizeof(PluginJob::action) || args.size() >= sizeof(PluginJob::args)) {
+      action.length() >= sizeof(PluginJob::action) ||
+      (!req["args"].isNull() && measureJson(req["args"]) >= sizeof(PluginJob::args))) {
     server->send(400, "application/json", "{\"error\":\"bad plugin/action/args\"}");
     return;
   }
@@ -2463,7 +2457,7 @@ void CrossPointWebServer::handlePluginJobSubmit() {
   job->updatedAt = millis();
   snprintf(job->plugin, sizeof(job->plugin), "%s", plugin.c_str());
   snprintf(job->action, sizeof(job->action), "%s", action.c_str());
-  snprintf(job->args, sizeof(job->args), "%s", args.c_str());
+  if (!req["args"].isNull()) serializeJson(req["args"], job->args, sizeof(job->args));
   LOG_INF("WEB", "Plugin job %u queued: %s/%s", (unsigned)job->id, job->plugin, job->action);
   char msg[48];
   snprintf(msg, sizeof(msg), "{\"id\":%u}", (unsigned)job->id);
@@ -2505,10 +2499,14 @@ void CrossPointWebServer::handlePluginJobComplete() {
     if (job.state != JOB_RUNNING) break;
     job.state = (req["ok"] | false) ? JOB_DONE : JOB_ERROR;
     job.updatedAt = millis();
-    std::string result;
-    if (!req["result"].isNull()) serializeJson(req["result"], result);
-    if (result.size() >= sizeof(job.result)) result = "{\"error\":\"result too large\"}";
-    snprintf(job.result, sizeof(job.result), "%s", result.c_str());
+    job.result[0] = '\0';
+    if (!req["result"].isNull()) {
+      if (measureJson(req["result"]) >= sizeof(job.result)) {
+        strcpy(job.result, "{\"error\":\"result too large\"}");
+      } else {
+        serializeJson(req["result"], job.result, sizeof(job.result));
+      }
+    }
     LOG_INF("WEB", "Plugin job %u %s", (unsigned)id, job.state == JOB_DONE ? "done" : "failed");
     server->send(200, "application/json", "{\"ok\":true}");
     return;
@@ -2763,9 +2761,7 @@ void CrossPointWebServer::handleFontList() const {
     }
   }
 
-  String json;
-  serializeJson(doc, json);
-  server->send(200, "application/json", json);
+  sendJson(doc);
 }
 
 void CrossPointWebServer::handleFontUploadData() {
