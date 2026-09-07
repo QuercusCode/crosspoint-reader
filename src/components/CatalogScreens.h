@@ -15,7 +15,7 @@ class GfxRenderer;
 // offset, and draw a fui header. A trailing icon (e.g. search) becomes a
 // header action button optically aligned with the title glyphs.
 void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& renderer, const char* title,
-                         freeink::ui::BitmapRef trailingIcon = {},
+                         const freeink::ui::BitmapRef& trailingIcon = {},
                          freeink::ui::ActionId trailingAction = freeink::ui::NO_ACTION);
 
 // One line of a centered message block; bold marks a heading line.

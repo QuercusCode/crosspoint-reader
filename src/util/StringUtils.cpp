@@ -2,6 +2,8 @@
 
 #include <Utf8.h>
 
+#include <algorithm>
+
 namespace StringUtils {
 
 namespace {
@@ -10,10 +12,7 @@ constexpr size_t MAX_PRESERVED_EXTENSION_BYTES = 16;
 bool hasConventionalExtension(const std::string& name, const size_t dot) {
   const size_t extensionBytes = name.size() - dot;
   if (dot == 0 || extensionBytes < 2 || extensionBytes > MAX_PRESERVED_EXTENSION_BYTES) return false;
-  for (size_t i = dot + 1; i < name.size(); i++) {
-    if (!std::isalnum(static_cast<unsigned char>(name[i]))) return false;
-  }
-  return true;
+  return std::all_of(name.begin() + dot + 1, name.end(), [](const unsigned char c) { return std::isalnum(c) != 0; });
 }
 
 std::string sanitizeFilenameRange(const std::string& name, const size_t endOffset, const size_t contentMaxBytes,

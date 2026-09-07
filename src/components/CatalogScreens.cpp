@@ -9,7 +9,7 @@
 namespace fui = freeink::ui;
 
 void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& renderer, const char* title,
-                         const fui::BitmapRef trailingIcon, const fui::ActionId trailingAction) {
+                         const fui::BitmapRef& trailingIcon, const fui::ActionId trailingAction) {
   screen.takeBottom(static_cast<int16_t>(UITheme::getInstance().getMetrics().buttonHintsHeight));
   // Same top offset as every GUI.drawHeader caller, so the band lines up with
   // the rest of the firmware's screens.
