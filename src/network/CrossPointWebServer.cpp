@@ -1324,7 +1324,14 @@ void CrossPointWebServer::handleGetSettings() const {
       }
       case SettingType::STRING: {
         doc["type"] = "string";
-        if (s.stringGetter) {
+        if (s.obfuscated) {
+          // Device-bound credentials may contain invalid text after an SD card move.
+          doc["value"] = nullptr;
+          doc["hasPassword"] =
+              s.stringGetter
+                  ? !s.stringGetter().empty()
+                  : s.stringMaxLen > 0 && *(reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset) != '\0';
+        } else if (s.stringGetter) {
           doc["value"] = s.stringGetter();
         } else if (s.stringMaxLen > 0) {
           doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset;

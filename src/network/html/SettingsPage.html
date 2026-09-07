@@ -363,10 +363,13 @@
     }
 
     if (setting.type === 'string') {
-      const inputType = setting.name.toLowerCase().includes('password') ? 'password' : 'text';
+      const isPassword = 'hasPassword' in setting;
+      const inputType = isPassword ? 'password' : 'text';
       const val = setting.value || '';
       return '<input type="' + inputType + '" id="' + id + '" value="' + escapeHtml(val) + '"' +
-        ' oninput="handleSettingChanged(\'' + setting.key + '\')">';
+        ' placeholder="' + (setting.hasPassword ? '(unchanged)' : '') + '"' +
+        ' oninput="this.dataset.changed=\'true\';handleSettingChanged(\'' + setting.key + '\')">' +
+        (setting.hasPassword ? '<button type="button" onclick="clearPassword(\'' + setting.key + '\')">Clear</button>' : '');
     }
 
     return '';
@@ -386,6 +389,7 @@
       return parseInt(el.value, 10);
     }
     if (setting.type === 'string') {
+      if ('hasPassword' in setting && !el.dataset.changed) return undefined;
       return el.value;
     }
     return undefined;
@@ -393,6 +397,13 @@
 
   function markChanged() {
     document.getElementById('saveBtn').disabled = false;
+  }
+
+  function clearPassword(key) {
+    const el = getControl(key);
+    el.value = '';
+    el.dataset.changed = 'true';
+    handleSettingChanged(key);
   }
 
   function findSetting(key) {
