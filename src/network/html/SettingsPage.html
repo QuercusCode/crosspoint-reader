@@ -369,7 +369,7 @@
       return '<input type="' + inputType + '" id="' + id + '" value="' + escapeHtml(val) + '"' +
         ' placeholder="' + (setting.hasPassword ? '(unchanged)' : '') + '"' +
         ' oninput="this.dataset.changed=\'true\';handleSettingChanged(\'' + setting.key + '\')">' +
-        (setting.hasPassword ? '<button type="button" onclick="clearPassword(\'' + setting.key + '\')">Clear</button>' : '');
+        (setting.hasPassword ? ' <button class="btn-small btn-delete" type="button" onclick="clearPassword(\'' + setting.key + '\')">Clear</button>' : '');
     }
 
     return '';
