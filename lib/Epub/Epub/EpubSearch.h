@@ -17,6 +17,6 @@ struct EpubSearchResult {
 
 class EpubSearch {
  public:
-  static bool search(const Epub& epub, const std::string& query,
-                     std::vector<EpubSearchResult>& results, size_t maxResults = 30);
+  static bool search(const Epub& epub, const std::string& query, std::vector<EpubSearchResult>& results,
+                     size_t maxResults = 30);
 };

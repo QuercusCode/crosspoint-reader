@@ -147,9 +147,8 @@ class EpubSearchStreamer final : public Print {
     collectingTrailing = false;
 
     char snippetBuf[160];
-    int written = snprintf(snippetBuf, sizeof(snippetBuf), "...%.*s%.*s%.*s...",
-                           static_cast<int>(pendingLeadingLen), pendingLeading,
-                           static_cast<int>(pendingMatchedLen), pendingMatched,
+    int written = snprintf(snippetBuf, sizeof(snippetBuf), "...%.*s%.*s%.*s...", static_cast<int>(pendingLeadingLen),
+                           pendingLeading, static_cast<int>(pendingMatchedLen), pendingMatched,
                            static_cast<int>(trailingCharsLen), trailingChars);
     if (written < 0) snippetBuf[0] = '\0';
 
@@ -197,13 +196,12 @@ class EpubSearchStreamer final : public Print {
 
 }  // namespace
 
-bool EpubSearch::search(const Epub& epub, const std::string& query,
-                        std::vector<EpubSearchResult>& results, const size_t maxResults) {
+bool EpubSearch::search(const Epub& epub, const std::string& query, std::vector<EpubSearchResult>& results,
+                        const size_t maxResults) {
   if (query.empty()) return false;
 
   std::string lowerQuery = query;
-  std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(),
-                 [](unsigned char c) { return tolower(c); });
+  std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), [](unsigned char c) { return tolower(c); });
 
   const int spineCount = epub.getSpineItemsCount();
   results.clear();

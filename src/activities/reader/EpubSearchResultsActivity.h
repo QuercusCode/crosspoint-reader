@@ -9,8 +9,8 @@
 
 class EpubSearchResultsActivity final : public UiListActivity {
  public:
-  explicit EpubSearchResultsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                     std::string query, const std::vector<EpubSearchResult>& results);
+  explicit EpubSearchResultsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string query,
+                                     const std::vector<EpubSearchResult>& results);
 
  private:
   int listCount() const override { return static_cast<int>(results.size()); }
