@@ -2,9 +2,9 @@
 
 #include <Arduino.h>
 #include <Epub.h>
-#include <esp_timer.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <esp_timer.h>
 
 #include <algorithm>
 #include <cctype>
@@ -230,8 +230,8 @@ bool EpubSearch::search(const Epub& epub, const std::string& query, std::vector<
   }
 
   const int64_t elapsedMs = (esp_timer_get_time() - searchStartUs) / 1000;
-  LOG_INF("SRCH", "Search for \"%s\" across %d spine items: %lld ms, %zu result(s)",
-          query.c_str(), spineCount, elapsedMs, results.size());
+  LOG_INF("SRCH", "Search for \"%s\" across %d spine items: %lld ms, %zu result(s)", query.c_str(), spineCount,
+          elapsedMs, results.size());
 
   return !results.empty();
 }
