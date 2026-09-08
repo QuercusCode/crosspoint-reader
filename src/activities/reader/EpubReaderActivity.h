@@ -150,6 +150,7 @@ class EpubReaderActivity final : public ReaderActivity {
   std::string moreRowValue(int row) const;
   void activateMoreRow(int row);
   void openDictionaryWordSelect();
+  void startInBookSearch();
   bool launchKOReaderSync();
   unsigned long confirmLongPressThreshold() const;
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
