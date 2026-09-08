@@ -2,9 +2,9 @@
 
 #include <Arduino.h>
 #include <Epub.h>
+#include <esp_timer.h>
 #include <I18n.h>
 #include <Logging.h>
-#include <esp_timer.h>
 
 #include <algorithm>
 #include <cctype>
