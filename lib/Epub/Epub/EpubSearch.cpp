@@ -4,6 +4,7 @@
 #include <Epub.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <esp_timer.h>
 
 #include <algorithm>
 #include <cctype>
@@ -202,6 +203,8 @@ bool EpubSearch::search(const Epub& epub, const std::string& query, std::vector<
   results.clear();
   results.reserve(std::min(maxResults, static_cast<size_t>(32)));
 
+  const int64_t searchStartUs = esp_timer_get_time();
+
   for (int i = 0; i < spineCount; ++i) {
     if (results.size() >= maxResults) {
       break;
@@ -225,6 +228,10 @@ bool EpubSearch::search(const Epub& epub, const std::string& query, std::vector<
     // Yield tick to avoid starving watchdogs on long books
     delay(1);
   }
+
+  const int64_t elapsedMs = (esp_timer_get_time() - searchStartUs) / 1000;
+  LOG_INF("SRCH", "Search for \"%s\" across %d spine items: %lld ms, %zu result(s)",
+          query.c_str(), spineCount, elapsedMs, results.size());
 
   return !results.empty();
 }
