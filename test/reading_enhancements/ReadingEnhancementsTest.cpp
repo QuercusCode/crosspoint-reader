@@ -6,6 +6,89 @@
 #include <string>
 #include <vector>
 
+#include "ReadingSpeedTracker.h"
+
+// ---------------------------------------------------------------------------
+// ReadingSpeedTracker Unit Tests
+// ---------------------------------------------------------------------------
+
+TEST(ReadingSpeedTrackerTest, DefaultAverageWhenNoSamples) {
+  ReadingSpeedTracker tracker;
+  EXPECT_EQ(tracker.getAverageSecondsPerPage(), ReadingSpeedTracker::DEFAULT_SEC_PER_PAGE);
+}
+
+TEST(ReadingSpeedTrackerTest, DiscardsSkimmingUnderTwoSeconds) {
+  ReadingSpeedTracker tracker;
+  tracker.onPageEntered(1000);
+  tracker.onPageTurned(2500);  // delta = 1500ms (< 2000ms MIN_PAGE_TIME_MS)
+
+  // Should not record sample; remains default
+  EXPECT_EQ(tracker.getAverageSecondsPerPage(), ReadingSpeedTracker::DEFAULT_SEC_PER_PAGE);
+}
+
+TEST(ReadingSpeedTrackerTest, DiscardsIdlePausesOverFiveMinutes) {
+  ReadingSpeedTracker tracker;
+  tracker.onPageEntered(1000);
+  tracker.onPageTurned(350000);  // delta = 349,000ms (> 300,000ms MAX_PAGE_TIME_MS)
+
+  // Should not record sample; remains default
+  EXPECT_EQ(tracker.getAverageSecondsPerPage(), ReadingSpeedTracker::DEFAULT_SEC_PER_PAGE);
+}
+
+TEST(ReadingSpeedTrackerTest, ComputesRollingAverageOfNormalTurns) {
+  ReadingSpeedTracker tracker;
+
+  // Turn 1: 30 seconds (30,000 ms)
+  tracker.onPageEntered(1000);
+  tracker.onPageTurned(31000);
+  EXPECT_EQ(tracker.getAverageSecondsPerPage(), 30u);
+
+  // Turn 2: 50 seconds (50,000 ms)
+  tracker.onPageEntered(31000);
+  tracker.onPageTurned(81000);
+  EXPECT_EQ(tracker.getAverageSecondsPerPage(), 40u);  // (30 + 50) / 2 = 40s
+}
+
+TEST(ReadingSpeedTrackerTest, ComputesMinutesLeftInChapter) {
+  ReadingSpeedTracker tracker;
+  // Baseline average is 45 sec per page (3/4 minute)
+  // If 4 pages left: 4 * 45s = 180s = 3 minutes
+  EXPECT_EQ(tracker.getMinutesLeftInChapter(1, 5), 3);
+
+  // If on last page (0 pages left): 0 minutes
+  EXPECT_EQ(tracker.getMinutesLeftInChapter(5, 5), 0);
+  EXPECT_EQ(tracker.getMinutesLeftInChapter(6, 5), 0);
+}
+
+TEST(ReadingSpeedTrackerTest, FormatsTimeLeftStrings) {
+  char buf[32];
+
+  // 0 or negative minutes
+  ReadingSpeedTracker::formatTimeLeft(buf, sizeof(buf), 0);
+  EXPECT_STREQ(buf, "");
+
+  // Under 60 minutes
+  ReadingSpeedTracker::formatTimeLeft(buf, sizeof(buf), 8);
+  EXPECT_STREQ(buf, "8m");
+
+  ReadingSpeedTracker::formatTimeLeft(buf, sizeof(buf), 59);
+  EXPECT_STREQ(buf, "59m");
+
+  // Exact hours
+  ReadingSpeedTracker::formatTimeLeft(buf, sizeof(buf), 60);
+  EXPECT_STREQ(buf, "1h");
+
+  ReadingSpeedTracker::formatTimeLeft(buf, sizeof(buf), 120);
+  EXPECT_STREQ(buf, "2h");
+
+  // Hours and minutes
+  ReadingSpeedTracker::formatTimeLeft(buf, sizeof(buf), 75);
+  EXPECT_STREQ(buf, "1h 15m");
+
+  ReadingSpeedTracker::formatTimeLeft(buf, sizeof(buf), 135);
+  EXPECT_STREQ(buf, "2h 15m");
+}
+
 namespace {
 
 struct SearchMatch {

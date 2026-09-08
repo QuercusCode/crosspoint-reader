@@ -13,6 +13,7 @@
 #include "BookmarkEntry.h"
 #include "EpubReaderMenuActivity.h"
 #include "ProgressMapper.h"
+#include "ReadingSpeedTracker.h"
 #include "ReaderActivity.h"
 #include "ReaderToolbarUi.h"
 #include "components/OptionPopup.h"
@@ -32,6 +33,7 @@ class EpubReaderActivity final : public ReaderActivity {
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
   int8_t pendingManualTurn = 0;
+  mutable ReadingSpeedTracker speedTracker;
   bool pendingPercentJump = false;
   float pendingSpineProgress = 0.0f;
   bool pendingScreenshot = false;

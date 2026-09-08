@@ -237,6 +237,7 @@ bool EpubReaderActivity::loadBook() {
   }
 
   loadCachedBookmarks();
+  speedTracker.onPageEntered();
   return true;
 }
 
@@ -1048,6 +1049,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
       lastPageTurnTime = millis();
+      speedTracker.onPageTurned();
       return true;
     } else if (currentSpineIndex + 1 < epub->getSpineItemsCount()) {
       RenderLock lock;
@@ -1055,16 +1057,19 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       currentSpineIndex++;
       section.reset();
       lastPageTurnTime = millis();
+      speedTracker.onPageTurned();
       return true;
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
       lastPageTurnTime = millis();
+      speedTracker.onPageTurned();
       return true;
     }
   } else {
     if (section->currentPage > 0) {
       section->currentPage--;
       lastPageTurnTime = millis();
+      speedTracker.onPageTurned();
       return true;
     } else if (currentSpineIndex > 0) {
       RenderLock lock;
@@ -1073,6 +1078,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       currentSpineIndex--;
       section.reset();
       lastPageTurnTime = millis();
+      speedTracker.onPageTurned();
       return true;
     }
   }
@@ -1753,8 +1759,24 @@ void EpubReaderActivity::renderStatusBar() const {
     title = epub ? epub->getTitle() : "";
   }
 
+  char extraTextBuf[32] = {0};
+  const char* extraText = nullptr;
+  if (sb.showsTimeLeft()) {
+    int minutesLeft = 0;
+    if (sb.timeLeftMode == CrossPointSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_CHAPTER) {
+      minutesLeft = speedTracker.getMinutesLeftInChapter(currentPage, static_cast<int>(pageCount));
+    } else if (sb.timeLeftMode == CrossPointSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_BOOK) {
+      minutesLeft = speedTracker.getMinutesLeftInBook(bookProgress, currentPage, static_cast<int>(pageCount));
+    }
+    if (minutesLeft > 0) {
+      ReadingSpeedTracker::formatTimeLeft(extraTextBuf, sizeof(extraTextBuf), minutesLeft, tr(STR_UNIT_MINUTE),
+                                          tr(STR_UNIT_HOUR));
+      extraText = extraTextBuf;
+    }
+  }
+
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
-                    section ? section->isBuilding() : false);
+                    section ? section->isBuilding() : false, extraText);
 }
 
 // ---------------------------------------------------------------------------

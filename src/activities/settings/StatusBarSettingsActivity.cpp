@@ -13,6 +13,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "activities/reader/ReadingSpeedTracker.h"
 
 namespace fui = freeink::ui;
 
@@ -22,6 +23,7 @@ namespace {
 enum MenuItem {
   ITEM_CHAPTER_PAGE_COUNT = 0,
   ITEM_BOOK_PROGRESS_PERCENTAGE,
+  ITEM_TIME_LEFT,
   ITEM_PROGRESS_BAR,
   ITEM_PROGRESS_BAR_THICKNESS,
   ITEM_TITLE,
@@ -42,6 +44,7 @@ static_assert(FULL_MENU_ITEMS == StatusBarSettingsActivity::MAX_STATUS_BAR_ITEMS
 const StrId menuNames[FULL_MENU_ITEMS] = {
     StrId::STR_CHAPTER_PAGE_COUNT,
     StrId::STR_BOOK_PROGRESS_PERCENTAGE,
+    StrId::STR_TIME_LEFT,
     StrId::STR_PROGRESS_BAR,
     StrId::STR_PROGRESS_BAR_THICKNESS,
     StrId::STR_TITLE,
@@ -52,6 +55,10 @@ const StrId menuNames[FULL_MENU_ITEMS] = {
     StrId::STR_CLOCK_UTC_OFFSET,
     StrId::STR_CLOCK_SYNC_NOW,
 };
+
+constexpr int TIME_LEFT_ITEMS = 3;
+constexpr StrId timeLeftNames[TIME_LEFT_ITEMS] = {StrId::STR_HIDE, StrId::STR_TIME_LEFT_CHAPTER,
+                                                 StrId::STR_TIME_LEFT_BOOK};
 
 constexpr int CLOCK_FORMAT_ITEMS = 2;
 const StrId clockFormatNames[CLOCK_FORMAT_ITEMS] = {StrId::STR_CLOCK_FORMAT_24H, StrId::STR_CLOCK_FORMAT_12H};
@@ -104,6 +111,10 @@ void StatusBarSettingsActivity::onEnter() {
     SETTINGS.statusBarProgressBarThickness = CrossPointSettings::STATUS_BAR_PROGRESS_BAR_THICKNESS::PROGRESS_BAR_NORMAL;
   }
 
+  if (SETTINGS.statusBarTimeLeft >= TIME_LEFT_ITEMS) {
+    SETTINGS.statusBarTimeLeft = CrossPointSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_HIDE;
+  }
+
   if (SETTINGS.statusBarTitle >= TITLE_ITEMS) {
     SETTINGS.statusBarTitle = CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE;
   }
@@ -154,6 +165,13 @@ void StatusBarSettingsActivity::handleSelection() {
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
       break;
+    case ITEM_TIME_LEFT:
+      optionPopup.show(StrId::STR_TIME_LEFT, timeLeftNames, TIME_LEFT_ITEMS, SETTINGS.statusBarTimeLeft,
+                       [this](int idx) {
+                         SETTINGS.statusBarTimeLeft = idx;
+                         SETTINGS.saveToFile();
+                       });
+      return;
     case ITEM_PROGRESS_BAR:
       optionPopup.show(StrId::STR_PROGRESS_BAR, progressBarNames, PROGRESS_BAR_ITEMS, SETTINGS.statusBarProgressBar,
                        [this](int idx) {
@@ -209,6 +227,8 @@ std::string StatusBarSettingsActivity::rowValueText(const int index) {
       return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
+    case ITEM_TIME_LEFT:
+      return I18N.get(timeLeftNames[SETTINGS.statusBarTimeLeft]);
     case ITEM_PROGRESS_BAR:
       return I18N.get(progressBarNames[SETTINGS.statusBarProgressBar]);
     case ITEM_PROGRESS_BAR_THICKNESS:
@@ -292,8 +312,18 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
     title = tr(STR_EXAMPLE_CHAPTER);
   }
 
+  char extraTextBuf[32] = {0};
+  const char* extraText = nullptr;
+  if (SETTINGS.showsTimeLeft()) {
+    const int previewMinutes =
+        (SETTINGS.statusBarTimeLeft == CrossPointSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_CHAPTER) ? 15 : 45;
+    ReadingSpeedTracker::formatTimeLeft(extraTextBuf, sizeof(extraTextBuf), previewMinutes, tr(STR_UNIT_MINUTE),
+                                        tr(STR_UNIT_HOUR));
+    extraText = extraTextBuf;
+  }
+
   // Anchor the preview as a footer directly above the button hints.
-  GUI.drawStatusBar(renderer, 75, 8, 32, title, metrics.buttonHintsHeight, 0, false);
+  GUI.drawStatusBar(renderer, 75, 8, 32, title, metrics.buttonHintsHeight, 0, false, false, false, extraText);
 
   renderer.drawCenteredText(UI_10_FONT_ID,
                             renderer.getScreenHeight() - UITheme::getInstance().getStatusBarHeight() -
