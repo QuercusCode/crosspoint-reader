@@ -12,7 +12,9 @@ struct EpubSearchResult {
   int spineIndex = 0;
   uint32_t visibleTextOffset = 0;
   std::string chapterTitle;
-  std::string snippet;
+  std::string preContext;
+  std::string match;
+  std::string postContext;
 };
 
 class EpubSearch {

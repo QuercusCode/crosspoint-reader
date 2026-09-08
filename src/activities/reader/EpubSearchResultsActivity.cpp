@@ -17,10 +17,27 @@ EpubSearchResultsActivity::EpubSearchResultsActivity(GfxRenderer& renderer, Mapp
 void EpubSearchResultsActivity::buildRowItems() {
   rowItems.clear();
   rowItems.reserve(results.size());
+  formattedSnippets.clear();
+  formattedSnippets.reserve(results.size());
+
   for (size_t i = 0; i < results.size(); ++i) {
+    const auto& res = results[i];
+    std::string snippet;
+    snippet.reserve(res.preContext.size() + res.match.size() + res.postContext.size() + 8);
+    if (!res.preContext.empty()) {
+      snippet += "...";
+      snippet += res.preContext;
+    }
+    snippet += res.match;
+    if (!res.postContext.empty()) {
+      snippet += res.postContext;
+      snippet += "...";
+    }
+    formattedSnippets.push_back(std::move(snippet));
+
     fui::ListItem item;
-    item.label = results[i].snippet.c_str();
-    item.value = results[i].chapterTitle.c_str();
+    item.label = formattedSnippets.back().c_str();
+    item.value = res.chapterTitle.c_str();
     item.actionValue = static_cast<int16_t>(i);
     rowItems.push_back(item);
   }

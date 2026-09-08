@@ -22,6 +22,7 @@ class EpubSearchResultsActivity final : public UiListActivity {
 
   std::string query;
   const std::vector<EpubSearchResult>& results;
+  std::vector<std::string> formattedSnippets;
   std::vector<freeink::ui::ListItem> rowItems;
   void buildRowItems();
 };

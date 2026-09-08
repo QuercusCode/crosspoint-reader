@@ -10,7 +10,9 @@ namespace {
 
 struct SearchMatch {
   uint32_t offset;
-  std::string snippet;
+  std::string preContext;
+  std::string match;
+  std::string postContext;
 };
 
 std::vector<SearchMatch> simulateSearch(const std::string& htmlContent, const std::string& query) {
@@ -34,8 +36,7 @@ std::vector<SearchMatch> simulateSearch(const std::string& htmlContent, const st
 
   auto finalizeMatch = [&]() {
     collectingTrailing = false;
-    std::string snippet = "..." + pendingLeading + pendingMatched + trailingChars + "...";
-    matches.push_back({pendingOffset, snippet});
+    matches.push_back({pendingOffset, pendingLeading, pendingMatched, trailingChars});
   };
 
   for (size_t i = 0; i < htmlContent.size(); ++i) {
@@ -111,21 +112,21 @@ TEST(InBookSearchTest, StripsTagsAndMatchesText) {
   auto matches = simulateSearch(html, "brown");
 
   ASSERT_EQ(matches.size(), 1u);
-  EXPECT_NE(matches[0].snippet.find("brown"), std::string::npos);
+  EXPECT_EQ(matches[0].match, "brown");
 }
 
 TEST(InBookSearchTest, CaseInsensitiveSearch) {
   const std::string html = "<h1>CHAPTER ONE</h1><p>Captain Nemo looked out the window.</p>";
 
-  // Search with lowercase, verifies source casing "Nemo" is preserved in snippet
+  // Search with lowercase, verifies source casing "Nemo" is preserved in match
   auto matches = simulateSearch(html, "nemo");
   ASSERT_EQ(matches.size(), 1u);
-  EXPECT_NE(matches[0].snippet.find("Nemo"), std::string::npos);
+  EXPECT_EQ(matches[0].match, "Nemo");
 
   // Search with uppercase, verifies source casing "Captain" is preserved
   auto matches2 = simulateSearch(html, "CAPTAIN");
   ASSERT_EQ(matches2.size(), 1u);
-  EXPECT_NE(matches2[0].snippet.find("Captain"), std::string::npos);
+  EXPECT_EQ(matches2[0].match, "Captain");
 }
 
 TEST(InBookSearchTest, DoesNotMatchInsideHtmlTags) {

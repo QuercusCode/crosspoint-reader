@@ -142,17 +142,13 @@ class EpubSearchStreamer final : public Print {
   void finalizePendingMatch() {
     collectingTrailing = false;
 
-    char snippetBuf[160];
-    int written = snprintf(snippetBuf, sizeof(snippetBuf), "...%.*s%.*s%.*s...", static_cast<int>(pendingLeadingLen),
-                           pendingLeading, static_cast<int>(pendingMatchedLen), pendingMatched,
-                           static_cast<int>(trailingCharsLen), trailingChars);
-    if (written < 0) snippetBuf[0] = '\0';
-
     EpubSearchResult result;
     result.spineIndex = spineIndex;
     result.visibleTextOffset = pendingMatchOffset;
     result.chapterTitle = chapterTitle;
-    result.snippet = snippetBuf;
+    result.preContext.assign(pendingLeading, pendingLeadingLen);
+    result.match.assign(pendingMatched, pendingMatchedLen);
+    result.postContext.assign(trailingChars, trailingCharsLen);
 
     results.push_back(std::move(result));
 
