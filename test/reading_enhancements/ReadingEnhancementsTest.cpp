@@ -18,8 +18,7 @@ std::vector<SearchMatch> simulateSearch(const std::string& htmlContent, const st
   if (query.empty()) return matches;
 
   std::string lowerQuery = query;
-  std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(),
-                 [](unsigned char c) { return tolower(c); });
+  std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), [](unsigned char c) { return tolower(c); });
 
   bool insideTag = false;
   uint32_t visibleOffset = 0;
