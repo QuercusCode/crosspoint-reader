@@ -25,13 +25,13 @@ void EpubSearchResultsActivity::buildRowItems() {
     std::string snippet;
     snippet.reserve(res.preContext.size() + res.match.size() + res.postContext.size() + 8);
     if (!res.preContext.empty()) {
-      snippet += "...";
+      snippet += tr(STR_PRE_ELLIPSIS);
       snippet += res.preContext;
     }
     snippet += res.match;
     if (!res.postContext.empty()) {
       snippet += res.postContext;
-      snippet += "...";
+      snippet += tr(STR_POST_ELLIPSIS);
     }
     formattedSnippets.push_back(std::move(snippet));
 
