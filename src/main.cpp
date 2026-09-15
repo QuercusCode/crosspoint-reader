@@ -41,6 +41,7 @@
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
+#include "util/Timezones.h"
 
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, renderer);
@@ -206,8 +207,17 @@ void restartToHomeAfterStorageHandoff() {
   ESP.restart();
 }
 
+void toggleFrontlight() {
+  if (!Frontlight.present()) return;
+  const bool lightOn = !Frontlight.isOn();
+  Frontlight.setOn(lightOn);
+  SETTINGS.frontlightOn = lightOn ? 1 : 0;
+  SETTINGS.saveToFile();
+  LOG_INF("LIGHT", "Frontlight toggled %s", lightOn ? "on" : "off");
+}
+
 bool handleX4ProFrontlightDoubleClick() {
-  if (!BoardConfig::isX4Pro() || !gpio.wasReleased(HalGPIO::BTN_POWER)) {
+  if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight || !gpio.wasReleased(HalGPIO::BTN_POWER)) {
     return false;
   }
 
@@ -223,11 +233,7 @@ bool handleX4ProFrontlightDoubleClick() {
   }
 
   lastX4ProPowerClickAt = 0;
-  const bool lightOn = !Frontlight.isOn();
-  Frontlight.setOn(lightOn);
-  SETTINGS.frontlightOn = lightOn ? 1 : 0;
-  SETTINGS.saveToFile();
-  LOG_INF("LIGHT", "Frontlight toggled %s by power-button double-click", lightOn ? "on" : "off");
+  toggleFrontlight();
   return true;
 }
 
@@ -424,6 +430,9 @@ void setup() {
     SETTINGS.readerMenuStyle = CrossPointSettings::READER_MENU_TOOLBAR;
   }
   SETTINGS.loadFromFile();
+  // Push the saved timezone's POSIX rule into the clock (migrating the legacy
+  // UTC-offset setting on first boot after the update).
+  timezones::applyToClock();
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
@@ -730,8 +739,12 @@ void loop() {
 #endif
 
   // Refresh screen when power button is short-pressed with FORCE_REFRESH setting.
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
-      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+  if (mappedInputManager.homeButtonAction() == HomeButtonAction::ToggleFrontlight) {
+    toggleFrontlight();
+  }
+  if (mappedInputManager.homeButtonAction() == HomeButtonAction::Refresh ||
+      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
+       mappedInputManager.wasReleased(MappedInputManager::Button::Power))) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
     if (!activityManager.handleForcedRefresh()) {
       RenderLock lock;
