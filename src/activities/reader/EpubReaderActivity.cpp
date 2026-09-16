@@ -2655,50 +2655,49 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
 
 void EpubReaderActivity::startInBookSearch(std::string initialQuery) {
   if (!epub) return;
-  startActivityForResult(
-      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_IN_BOOK), initialQuery, 32,
-                                              InputType::Text),
-      [this](const ActivityResult& result) {
-        if (result.isCancelled) {
-          openReaderMenu();
-          return;
-        }
-        const auto& keyboardResult = std::get<KeyboardResult>(result.data);
-        const std::string rawQuery = keyboardResult.text;
-        const auto start = rawQuery.find_first_not_of(" \t\r\n");
-        if (start == std::string::npos) {
-          startInBookSearch("");
-          return;
-        }
-        const auto end = rawQuery.find_last_not_of(" \t\r\n");
-        const std::string query = rawQuery.substr(start, end - start + 1);
+  startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_IN_BOOK),
+                                                                 initialQuery, 32, InputType::Text),
+                         [this](const ActivityResult& result) {
+                           if (result.isCancelled) {
+                             openReaderMenu();
+                             return;
+                           }
+                           const auto& keyboardResult = std::get<KeyboardResult>(result.data);
+                           const std::string rawQuery = keyboardResult.text;
+                           const auto start = rawQuery.find_first_not_of(" \t\r\n");
+                           if (start == std::string::npos) {
+                             startInBookSearch("");
+                             return;
+                           }
+                           const auto end = rawQuery.find_last_not_of(" \t\r\n");
+                           const std::string query = rawQuery.substr(start, end - start + 1);
 
-        GUI.drawPopup(renderer, tr(STR_SEARCHING));
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+                           GUI.drawPopup(renderer, tr(STR_SEARCHING));
+                           renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
-        auto searchResults = std::make_shared<std::vector<EpubSearchResult>>();
-        if (!EpubSearch::search(*epub, query, *searchResults, 30)) {
-          GUI.drawPopup(renderer, tr(STR_NO_MATCHES_FOUND));
-          renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-          delay(1200);
-          startInBookSearch(query);
-          return;
-        }
+                           auto searchResults = std::make_shared<std::vector<EpubSearchResult>>();
+                           if (!EpubSearch::search(*epub, query, *searchResults, 30)) {
+                             GUI.drawPopup(renderer, tr(STR_NO_MATCHES_FOUND));
+                             renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+                             delay(1200);
+                             startInBookSearch(query);
+                             return;
+                           }
 
-        startActivityForResult(
-            std::make_unique<EpubSearchResultsActivity>(renderer, mappedInput, query, *searchResults),
-            [this, query, searchResults](const ActivityResult& searchRes) {
-              if (searchRes.isCancelled) {
-                startInBookSearch(query);
-                return;
-              }
-              const auto& change = std::get<ProgressChangeResult>(searchRes.data);
-              RenderLock lock;
-              clearDeferredReposition();
-              currentSpineIndex = change.spineIndex;
-              pendingOffsetJump = change.visibleTextOffset;
-              section.reset();
-              requestUpdate();
-            });
-      });
+                           startActivityForResult(std::make_unique<EpubSearchResultsActivity>(renderer, mappedInput,
+                                                                                              query, *searchResults),
+                                                  [this, query, searchResults](const ActivityResult& searchRes) {
+                                                    if (searchRes.isCancelled) {
+                                                      startInBookSearch(query);
+                                                      return;
+                                                    }
+                                                    const auto& change = std::get<ProgressChangeResult>(searchRes.data);
+                                                    RenderLock lock;
+                                                    clearDeferredReposition();
+                                                    currentSpineIndex = change.spineIndex;
+                                                    pendingOffsetJump = change.visibleTextOffset;
+                                                    section.reset();
+                                                    requestUpdate();
+                                                  });
+                         });
 }

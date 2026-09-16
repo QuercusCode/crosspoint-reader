@@ -89,7 +89,8 @@ class EpubSearchStreamer final : public Print {
         // Complete match found!
         pendingMatchOffset = (visibleTextOffset >= lowerQuery.length()) ? (visibleTextOffset - lowerQuery.length()) : 0;
         pendingLeadingLen = 0;
-        const size_t contextToTake = (recentCharsLen > lowerQuery.length()) ? (recentCharsLen - lowerQuery.length()) : 0;
+        const size_t contextToTake =
+            (recentCharsLen > lowerQuery.length()) ? (recentCharsLen - lowerQuery.length()) : 0;
         const size_t startIdx = (contextToTake > LEADING_CONTEXT_CHARS) ? (contextToTake - LEADING_CONTEXT_CHARS) : 0;
         for (size_t i = startIdx; i < contextToTake && pendingLeadingLen < sizeof(pendingLeading); ++i) {
           pendingLeading[pendingLeadingLen++] = recentChars[i];
