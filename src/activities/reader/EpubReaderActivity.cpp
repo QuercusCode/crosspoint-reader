@@ -2653,21 +2653,25 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
   return localPos;
 }
 
-void EpubReaderActivity::startInBookSearch() {
+void EpubReaderActivity::startInBookSearch(std::string initialQuery) {
   if (!epub) return;
   startActivityForResult(
-      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_IN_BOOK), "", 32, InputType::Text),
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_IN_BOOK), initialQuery, 32,
+                                              InputType::Text),
       [this](const ActivityResult& result) {
         if (result.isCancelled) {
           openReaderMenu();
           return;
         }
         const auto& keyboardResult = std::get<KeyboardResult>(result.data);
-        const std::string query = keyboardResult.text;
-        if (query.empty()) {
-          openReaderMenu();
+        const std::string rawQuery = keyboardResult.text;
+        const auto start = rawQuery.find_first_not_of(" \t\r\n");
+        if (start == std::string::npos) {
+          startInBookSearch("");
           return;
         }
+        const auto end = rawQuery.find_last_not_of(" \t\r\n");
+        const std::string query = rawQuery.substr(start, end - start + 1);
 
         GUI.drawPopup(renderer, tr(STR_SEARCHING));
         renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -2677,15 +2681,15 @@ void EpubReaderActivity::startInBookSearch() {
           GUI.drawPopup(renderer, tr(STR_NO_MATCHES_FOUND));
           renderer.displayBuffer(HalDisplay::HALF_REFRESH);
           delay(1200);
-          openReaderMenu();
+          startInBookSearch(query);
           return;
         }
 
         startActivityForResult(
             std::make_unique<EpubSearchResultsActivity>(renderer, mappedInput, query, *searchResults),
-            [this, searchResults](const ActivityResult& searchRes) {
+            [this, query, searchResults](const ActivityResult& searchRes) {
               if (searchRes.isCancelled) {
-                openReaderMenu();
+                startInBookSearch(query);
                 return;
               }
               const auto& change = std::get<ProgressChangeResult>(searchRes.data);

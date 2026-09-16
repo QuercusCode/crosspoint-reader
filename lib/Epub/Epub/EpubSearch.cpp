@@ -74,8 +74,8 @@ class EpubSearchStreamer final : public Print {
     }
 
     // Check match against lowercase query
-    const char lowerC = static_cast<char>(tolower(static_cast<unsigned char>(normalizedChar)));
-    if (lowerC == lowerQuery[matchIndex]) {
+    const char lowercasedChar = static_cast<char>(tolower(static_cast<unsigned char>(normalizedChar)));
+    if (lowercasedChar == lowerQuery[matchIndex]) {
       if (matchIndex < sizeof(matchedSource)) {
         matchedSource[matchIndex] = normalizedChar;
       }
@@ -88,19 +88,16 @@ class EpubSearchStreamer final : public Print {
 
         // Complete match found!
         pendingMatchOffset = (visibleTextOffset >= lowerQuery.length()) ? (visibleTextOffset - lowerQuery.length()) : 0;
-
-        // Capture matched source text preserving source casing
-        pendingMatchedLen = std::min(lowerQuery.length(), sizeof(pendingMatched));
-        memcpy(pendingMatched, matchedSource, pendingMatchedLen);
-
-        // Extract leading context from recentChars
         pendingLeadingLen = 0;
-        const size_t contextToTake =
-            (recentCharsLen > lowerQuery.length()) ? (recentCharsLen - lowerQuery.length()) : 0;
+        const size_t contextToTake = (recentCharsLen > lowerQuery.length()) ? (recentCharsLen - lowerQuery.length()) : 0;
         const size_t startIdx = (contextToTake > LEADING_CONTEXT_CHARS) ? (contextToTake - LEADING_CONTEXT_CHARS) : 0;
         for (size_t i = startIdx; i < contextToTake && pendingLeadingLen < sizeof(pendingLeading); ++i) {
           pendingLeading[pendingLeadingLen++] = recentChars[i];
         }
+
+        // Copy actual source characters that matched
+        pendingMatchedLen = std::min(matchIndex, sizeof(pendingMatched));
+        std::memcpy(pendingMatched, matchedSource, pendingMatchedLen);
 
         // Start collecting trailing context
         trailingCharsLen = 0;
@@ -110,7 +107,7 @@ class EpubSearchStreamer final : public Print {
     } else {
       // Mismatch, reset matchIndex
       if (matchIndex > 0) {
-        matchIndex = (lowerC == lowerQuery[0]) ? 1 : 0;
+        matchIndex = (lowercasedChar == lowerQuery[0]) ? 1 : 0;
         if (matchIndex == 1) {
           matchedSource[0] = normalizedChar;
         }
