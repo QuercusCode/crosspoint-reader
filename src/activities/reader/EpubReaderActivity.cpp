@@ -177,7 +177,8 @@ EpubReaderActivity::~EpubReaderActivity() {
 
 void EpubReaderActivity::onEnter() {
   ReaderActivity::onEnter();
-  speedTracker.onPageEntered();
+  lastTrackedSpineIndex = -1;
+  lastTrackedPageNumber = -1;
 }
 
 bool EpubReaderActivity::loadBook() {
@@ -1050,42 +1051,42 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 
 bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
   if (!section) return false;
-  speedTracker.onPageTurned();
   {
     RenderLock lock;
     clearDeferredReposition();
   }
+  bool turned = false;
   if (isForwardTurn) {
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
-      lastPageTurnTime = millis();
-      return true;
+      turned = true;
     } else if (currentSpineIndex + 1 < epub->getSpineItemsCount()) {
       RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex++;
       section.reset();
-      lastPageTurnTime = millis();
-      return true;
+      turned = true;
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
-      lastPageTurnTime = millis();
-      return true;
+      turned = true;
     }
   } else {
     if (section->currentPage > 0) {
       section->currentPage--;
-      lastPageTurnTime = millis();
-      return true;
+      turned = true;
     } else if (currentSpineIndex > 0) {
       RenderLock lock;
       nextPageNumber = 0;
       pendingPageJump = std::numeric_limits<uint16_t>::max();
       currentSpineIndex--;
       section.reset();
-      lastPageTurnTime = millis();
-      return true;
+      turned = true;
     }
+  }
+  if (turned) {
+    speedTracker.onPageTurned();
+    lastPageTurnTime = millis();
+    return true;
   }
   return false;
 }
@@ -1766,7 +1767,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
               tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0);
     }
   }
-  speedTracker.onPageEntered();
+
+  const int displayedPage = section ? section->currentPage : 0;
+  if (lastTrackedSpineIndex != currentSpineIndex || lastTrackedPageNumber != displayedPage) {
+    lastTrackedSpineIndex = currentSpineIndex;
+    lastTrackedPageNumber = displayedPage;
+    speedTracker.onPageEntered();
+  }
 }
 
 void EpubReaderActivity::renderStatusBar() const {

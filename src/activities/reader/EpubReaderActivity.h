@@ -55,6 +55,8 @@ class EpubReaderActivity final : public ReaderActivity {
   unsigned long bookmarkMessageTime = 0UL;
   bool pendingReadFolderMove = false;
   ReadingSpeedTracker speedTracker;
+  int lastTrackedSpineIndex = -1;
+  int lastTrackedPageNumber = -1;
 
   // Toolbar reader menu (SETTINGS.readerMenuStyle == READER_MENU_TOOLBAR): drawn
   // over the page instead of pushing the full-screen list menu. Select opens the

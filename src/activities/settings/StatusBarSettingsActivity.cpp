@@ -9,6 +9,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "activities/reader/ReadingSpeedTracker.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -49,7 +50,7 @@ const StrId menuNames[FULL_MENU_ITEMS] = {
 };
 
 constexpr int TIME_LEFT_ITEMS = CrossPointSettings::STATUS_BAR_TIME_LEFT_COUNT;
-const StrId timeLeftNames[TIME_LEFT_ITEMS] = {StrId::STR_HIDE, StrId::STR_CHAPTER, StrId::STR_BOOK};
+constexpr StrId timeLeftNames[TIME_LEFT_ITEMS] = {StrId::STR_HIDE, StrId::STR_CHAPTER, StrId::STR_BOOK};
 
 constexpr int PROGRESS_BAR_ITEMS = 3;
 const StrId progressBarNames[PROGRESS_BAR_ITEMS] = {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE};
@@ -262,12 +263,16 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
     title = tr(STR_EXAMPLE_CHAPTER);
   }
 
-  const char* extraPreview = nullptr;
+  char extraPreviewBuf[32];
+  extraPreviewBuf[0] = '\0';
   if (SETTINGS.statusBarTimeLeft == CrossPointSettings::TIME_LEFT_CHAPTER) {
-    extraPreview = "14m";
+    ReadingSpeedTracker::formatTimeLeft(extraPreviewBuf, sizeof(extraPreviewBuf), 14, tr(STR_UNIT_MINUTE),
+                                        tr(STR_UNIT_HOUR));
   } else if (SETTINGS.statusBarTimeLeft == CrossPointSettings::TIME_LEFT_BOOK) {
-    extraPreview = "1h 15m";
+    ReadingSpeedTracker::formatTimeLeft(extraPreviewBuf, sizeof(extraPreviewBuf), 75, tr(STR_UNIT_MINUTE),
+                                        tr(STR_UNIT_HOUR));
   }
+  const char* extraPreview = extraPreviewBuf[0] != '\0' ? extraPreviewBuf : nullptr;
 
   // Anchor the preview as a footer directly above the button hints.
   GUI.drawStatusBar(renderer, 75, 8, 32, title, metrics.buttonHintsHeight, 0, false, false, false, extraPreview);

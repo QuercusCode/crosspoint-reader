@@ -792,7 +792,8 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     }
 
     if (countPercentBuf[0] != '\0' && hasExtra) {
-      snprintf(progressStr, sizeof(progressStr), "%s · %s", countPercentBuf, extraStatusText);
+      snprintf(progressStr, sizeof(progressStr), "%s%s%s", countPercentBuf, tr(STR_STATUS_PROGRESS_SEPARATOR),
+               extraStatusText);
     } else if (countPercentBuf[0] != '\0') {
       snprintf(progressStr, sizeof(progressStr), "%s", countPercentBuf);
     } else {
