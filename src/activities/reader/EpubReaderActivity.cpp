@@ -175,6 +175,11 @@ EpubReaderActivity::~EpubReaderActivity() {
   }
 }
 
+void EpubReaderActivity::onEnter() {
+  ReaderActivity::onEnter();
+  speedTracker.onPageEntered();
+}
+
 bool EpubReaderActivity::loadBook() {
   auto loadedEpub = makeUniqueNoThrow<Epub>(bookPath, "/.crosspoint");
   if (!loadedEpub) {
@@ -1045,6 +1050,7 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 
 bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
   if (!section) return false;
+  speedTracker.onPageTurned();
   {
     RenderLock lock;
     clearDeferredReposition();
@@ -1760,6 +1766,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
               tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0);
     }
   }
+  speedTracker.onPageEntered();
 }
 
 void EpubReaderActivity::renderStatusBar() const {
@@ -1791,8 +1798,21 @@ void EpubReaderActivity::renderStatusBar() const {
     title = epub ? epub->getTitle() : "";
   }
 
+  char timeLeftStr[32] = {0};
+  if (sb.showsTimeLeft()) {
+    int minutes = 0;
+    const int totalPagesInChapter = static_cast<int>(pageCount);
+    if (sb.timeLeftMode == CrossPointSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_CHAPTER) {
+      minutes = speedTracker.getMinutesLeftInChapter(currentPage, totalPagesInChapter);
+    } else if (sb.timeLeftMode == CrossPointSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_BOOK) {
+      minutes = speedTracker.getMinutesLeftInBook(bookProgress, currentPage, totalPagesInChapter);
+    }
+    ReadingSpeedTracker::formatTimeLeft(timeLeftStr, sizeof(timeLeftStr), minutes, tr(STR_UNIT_MINUTE),
+                                        tr(STR_UNIT_HOUR));
+  }
+
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
-                    section ? section->isBuilding() : false);
+                    section ? section->isBuilding() : false, timeLeftStr[0] != '\0' ? timeLeftStr : nullptr);
 }
 
 // ---------------------------------------------------------------------------
