@@ -14,6 +14,7 @@
 #include "ReaderFontSizes.h"
 #include "SettingsList.h"
 #include "fontIds.h"
+#include "util/ParagraphIndentMigration.h"
 
 namespace {
 
@@ -64,7 +65,7 @@ uint8_t CrossPointSettings::sleepTimeoutEnumToMinutes(const uint8_t legacyValue)
 void CrossPointSettings::toJson(JsonDocument& doc) const {
   const CrossPointSettings& s = *this;
 
-  for (const auto& info : getSettingsList()) {
+  for (const auto& info : getSettingsList(nullptr, nullptr, /*forPersistence=*/true)) {
     if (!info.key) continue;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.
     if (!info.valuePtr && !info.stringOffset) continue;
@@ -118,7 +119,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
 
   auto clamp = [](uint8_t val, uint8_t maxVal, uint8_t def) -> uint8_t { return val < maxVal ? val : def; };
 
-  for (const auto& info : getSettingsList()) {
+  for (const auto& info : getSettingsList(nullptr, nullptr, /*forPersistence=*/true)) {
     if (!info.key) continue;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.
     if (!info.valuePtr && !info.stringOffset) continue;
@@ -178,6 +179,12 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       s.*(info.valuePtr) = v;
     }
   }
+
+  const auto indentSpaces = doc["paragraphIndentSpaces"];
+  const bool hasSavedWidth = indentSpaces.is<int>();
+  const int savedWidth = hasSavedWidth ? indentSpaces.as<int>() : 0;
+  paragraphIndentSpaces = migrateParagraphIndentSpaces(hasSavedWidth, savedWidth, extraParagraphSpacing != 0);
+  if (!hasSavedWidth || savedWidth < 0 || savedWidth > 5) needsResave = true;
 
   // Older files stored one combined touch mode under "touchReaderControls":
   // 0=off, 1=tap, 2=swipe, 3=inverted tap. Split it into the master toggle
@@ -293,6 +300,7 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   spec.characterSpacing = getCharacterSpacing();
   spec.wordSpacingPercent = wordSpacing;
   spec.extraParagraphSpacing = extraParagraphSpacing != 0;
+  spec.paragraphIndentSpaces = paragraphIndentSpaces;
   spec.paragraphAlignment = paragraphAlignment;
   spec.viewportWidth = viewportWidth;
   spec.viewportHeight = viewportHeight;
@@ -304,7 +312,11 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
 }
 
 float CrossPointSettings::getReaderLineCompression() const {
-  // SD card fonts use same compression as Bookerly (the most neutral values)
+  // SD card and vector fonts get a wider scale than the built-ins: their
+  // faces carry their own (often generous) natural line height, so the old
+  // Bookerly-tuned 1.1/1.2 steps were visually near-indistinguishable. At
+  // 12pt in portrait (~760px viewport) this scale spans ~26/24/19/15 lines
+  // per page — each step reads as a clearly different density.
   if (sdFontFamilyName[0] != '\0') {
     switch (lineSpacing) {
       case TIGHT:
@@ -313,9 +325,9 @@ float CrossPointSettings::getReaderLineCompression() const {
       default:
         return 1.0f;
       case WIDE:
-        return 1.1f;
+        return 1.3f;
       case EXTRA_WIDE:
-        return 1.2f;
+        return 1.6f;
     }
   }
 
