@@ -182,10 +182,6 @@ void StatusBarSettingsActivity::handleSelection() {
 
 std::string StatusBarSettingsActivity::rowValueText(const int index) {
   switch (index) {
-    case ITEM_CHAPTER_PAGE_COUNT:
-      return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
-    case ITEM_BOOK_PROGRESS_PERCENTAGE:
-      return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
     case ITEM_TIME_LEFT:
       return I18N.get(timeLeftNames[SETTINGS.statusBarTimeLeft]);
     case ITEM_PROGRESS_BAR:
@@ -194,14 +190,12 @@ std::string StatusBarSettingsActivity::rowValueText(const int index) {
       return I18N.get(progressBarThicknessNames[SETTINGS.statusBarProgressBarThickness]);
     case ITEM_TITLE:
       return I18N.get(titleNames[SETTINGS.statusBarTitle]);
-    case ITEM_BATTERY:
-      return SETTINGS.statusBarBattery ? tr(STR_SHOW) : tr(STR_HIDE);
     case ITEM_XTC_STATUS_BAR:
       return I18N.get(xtcStatusBarNames[SETTINGS.xtcStatusBarMode]);
     case ITEM_CLOCK:
       return I18N.get(statusBarClockNames[SETTINGS.statusBarClock]);
     default:
-      return tr(STR_HIDE);
+      return "";
   }
 }
 
@@ -226,6 +220,9 @@ void StatusBarSettingsActivity::buildScreen(UiScreen& screen) {
     rowValues_[i] = rowValueText(i);
     rowItems_[i].value = rowValues_[i].empty() ? nullptr : rowValues_[i].c_str();
   }
+  GUI.setCheckboxRow(rowItems_[ITEM_CHAPTER_PAGE_COUNT], SETTINGS.statusBarChapterPageCount);
+  GUI.setCheckboxRow(rowItems_[ITEM_BOOK_PROGRESS_PERCENTAGE], SETTINGS.statusBarBookProgressPercentage);
+  GUI.setCheckboxRow(rowItems_[ITEM_BATTERY], SETTINGS.statusBarBattery);
 
   fui::ListProps props;
   props.items = rowItems_;
