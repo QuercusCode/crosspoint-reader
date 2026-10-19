@@ -1424,7 +1424,11 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
     }
   }
   if (turned) {
-    speedTracker.onPageTurned();
+    if (automaticPageTurnActive) {
+      speedTracker.onPageEntered();
+    } else {
+      speedTracker.onPageTurned();
+    }
     lastPageTurnTime = millis();
     return true;
   }
